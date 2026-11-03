@@ -4,9 +4,11 @@
  * Options:   --api URL (default https://api.github.com)  --repo owner/name (own; default <login>/atlas-sync-log)
  *            --peers a/r,b/r   --state DIR (outbox + journal; default $TMPDIR/atlas-cli-<login>)
  * Token: env ATLAS_TOKEN only (never a flag, never written to disk). Without a token: read-only, anonymous.
- * Writes go ONLY to the own repo as log/<writer>/<seq>.json via the Contents API (same as the page).
+ * Writes go ONLY to the own repo as log/<writer>/<seq>.bin (binary atlas/1, the primary format) via the Contents API (same as the page);
+ * --codec json writes .json (debug/interchange). Codec: the copy embedded in client.html, else clients/atlas_codec.bundle.js; if it cannot be loaded
+ * or an encode fails, that write falls back to .json with a warning on stderr (a write never fails or drops ops because of the codec).
  * The outbox is written before each PUT and cleared after 201, so a crash re-sends with the same seq (idempotent: 422 + same
- * content = already written). Binary (.bin) segments need the Artist codec, which this CLI does not load: they are reported and skipped. */
+ * content = already written). Readers accept .json and .bin. */
 'use strict';
 const X7 = require('./exp7-sync-core.js'), fs = require('fs'), path = require('path'), os = require('os');
 const SEED = (() => { const h = fs.readFileSync(path.join(__dirname, 'client.html'), 'utf8'); const m = h.match(/const SEED = (\{[\s\S]*?\n\});/);
@@ -14,13 +16,21 @@ const SEED = (() => { const h = fs.readFileSync(path.join(__dirname, 'client.htm
 function args(argv) { const o = { _: [] }; for (let i = 0; i < argv.length; i++) { const a = argv[i];
   if (a.startsWith('--')) { const k = a.slice(2); o[k] = (argv[i + 1] && !argv[i + 1].startsWith('--')) ? argv[++i] : true; } else o._.push(a); } return o; }
 const O = args(process.argv.slice(2)), API = (O.api || 'https://api.github.com').replace(/\/$/, ''), TOKEN = process.env.ATLAS_TOKEN || null;
+function loadCodec() { try { const h = fs.readFileSync(path.join(__dirname, 'client.html'), 'utf8'), a = h.indexOf('/* ATLAS-CODEC-BEGIN'), z = h.indexOf('/* ATLAS-CODEC-END */');
+    let src = a < 0 || z < 0 ? '' : h.slice(h.indexOf('*/', a) + 2, z).replace(/<\\\/script/gi, '</script').trim();
+    const bp = path.join(__dirname, 'atlas_codec.bundle.js'); if (!src && fs.existsSync(bp)) src = fs.readFileSync(bp, 'utf8');   // not embedded (public repo): local bundle
+    if (!src) throw new Error('no codec embedded in client.html and no clients/atlas_codec.bundle.js'); const w = {}; new Function('window', src)(w); X7.setBinaryCodec(w.AtlasCodec.create(w.ATLAS_CODEC_WASM)); return true; }
+  catch (e) { process.stderr.write('warning: binary codec unavailable (' + e.message + '); writes fall back to JSON\n'); return false; } }
+if (process.env.ATLAS_NO_CODEC !== '1') loadCodec();   // ATLAS_NO_CODEC=1: test hook simulating a codec load failure
+X7.setCodecMode(O.codec === 'json' ? 'json' : 'bin');
+X7.onCodecFallback(why => process.stderr.write(`warning: ${why}; this segment is written as JSON instead (nothing lost)\n`));
 const out = s => process.stdout.write(s + '\n'), die = (s, c = 2) => { process.stderr.write('atlas-cli: ' + s + '\n'); process.exit(c); };
 async function gh(method, p, body) {
   const h = { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'atlas-cli' };
   if (TOKEN) h.Authorization = 'Bearer ' + TOKEN; if (body) h['Content-Type'] = 'application/json';
   const r = await fetch(API + p, { method, headers: h, body: body ? JSON.stringify(body) : undefined }); let j = null; try { j = await r.json(); } catch (e) {}
   return { r, j }; }
-const b64 = s => Buffer.from(s, 'utf8').toString('base64');
+const b64 = s => Buffer.from(s).toString('base64');
 async function readRepo(full, warn) {
   const ref = await gh('GET', `/repos/${full}/git/ref/heads/main`); if (ref.r.status !== 200) { warn(`${full}: no main branch (${ref.r.status})`); return []; }
   const t = await gh('GET', `/repos/${full}/git/trees/${ref.j.object.sha}?recursive=1`), list = [];
@@ -44,7 +54,7 @@ function journal(d, rec) { fs.appendFileSync(path.join(d, 'journal.ndjson'), JSO
 async function writeBatch(L, login, d, b) {
   for (let tries = 0; tries < 5; tries++) {
     const seg = { v: 2, atlas: 'demo', writer: login, seq: b.seq, ts: b.ts, createdAt: new Date(b.ts).toISOString(), ops: b.ops };
-    const p = `log/${login}/${X7.pad(b.seq)}.json`, body = X7.encodeSegment(seg), sz = X7.sizeCheck(Buffer.from(body));
+    const body = X7.encodeSegment(seg), p = `log/${login}/${X7.pad(b.seq)}${X7.extOf(body)}`, sz = X7.sizeCheck(Buffer.from(body));
     if (sz.hard) die(`segment ${sz.n} B is over the 1 MB hard limit; split the proposal yourself (never auto-split)`);
     const { r, j } = await gh('PUT', `/repos/${L.own}/contents/${p}`, { message: `atlas:demo writer:${login} seq:${b.seq}`, content: b64(body) });
     if (r.status === 201) { journal(d, { written: p, ops: b.ops.length }); return p; }

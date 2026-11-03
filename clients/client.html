@@ -35,7 +35,7 @@ ol.steps{margin:6px 0;padding-left:20px}#authMsg{margin-top:6px}#authMsg.warn,.w
  <label>Poll every <input type="number" id="fPoll" min="2" max="300"> s</label><br>
  <label>API base <input type="url" id="fApi" size="28"></label>
  <label>Log root <input type="text" id="fLogRoot" size="10"></label>
- <label title="opt-in; JSON is the default"><input type="checkbox" id="fCodec"> Binary segments (atlas/1)</label>
+ <label title="binary atlas/1 (.bin) is the default write format; tick to write JSON (.json) for debugging. Both are always readable."><input type="checkbox" id="fCodec"> Write JSON (debug)</label> <span id="codecWarn" class="ev-err" hidden></span>
  <div style="margin-top:6px"><b>Peers</b> <span class="mut">(other writers' public log repos, <code>owner/repo</code>, comma or newline separated; read without a token)</span><br>
   <textarea id="fPeers" rows="2" cols="48" spellcheck="false" placeholder="alice/atlas-sync-log, bob/atlas-sync-log"></textarea></div>
  <div><button id="bStart" class="pri">Start sync</button> <button id="bStop">Stop</button> <span class="mut">URL params: ?writer=…&amp;peers=a/atlas-sync-log,b/atlas-sync-log&amp;poll=10&amp;reponame=…&amp;api=…</span></div>
@@ -89,20 +89,30 @@ const pad = n => String(n).padStart(6, '0');
 let isList = p => /\/notes$/.test(p);
 function setListRule(f) { isList = f; }
 
-/* ---------- codec (JSON default; binary atlas/1 opt-in via setBinaryCodec) ---------- */
+/* ---------- codec (binary atlas/1 is the PRIMARY write format; JSON = interchange/debug, always readable) ----------
+ * mode is the writer's preference ('bin' default). If the binary codec is not loaded, or its encode throws, that write falls back to
+ * JSON (never fails, never drops ops) and onFallback(reason) is called so the UI/CLI can warn. Readers accept both, by magic bytes. */
 const MAGIC = [74, 82, 66];   // 'JRB' + 'A' (atlas) | 'W' (world, pre-ADR 0106) + version byte: the Artist codec container header
-const C = { mode: 'json', impl: null };
-function setBinaryCodec(impl) { C.impl = impl || null; if (!impl) C.mode = 'json'; }
-function setCodecMode(m) { if (m === 'bin' && !C.impl) throw new Error('binary codec not loaded'); C.mode = m === 'bin' ? 'bin' : 'json'; }
-function codecMode() { return C.mode; }
+const C = { mode: 'bin', impl: null, onFallback: null };
+function setBinaryCodec(impl) { C.impl = impl || null; }
+function setCodecMode(m) { C.mode = m === 'json' ? 'json' : 'bin'; }
+function codecPref() { return C.mode; }
+function codecMode() { return C.mode === 'bin' && C.impl ? 'bin' : 'json'; }   // what the next write will (try to) use
+function onCodecFallback(f) { C.onFallback = f; }
 function isBinary(b) { if (!b || b.length < 5) return false; for (let i = 0; i < 3; i++) if (b[i] !== MAGIC[i]) return false; return (b[3] === 65 || b[3] === 87) && b[4] >= 1 && b[4] < 16; }
 function encJSON(o, pretty) { return te.encode(pretty ? JSON.stringify(o, null, 1) : JSON.stringify(o)); }
-function encode(o, pretty) { return C.mode === 'bin' ? C.impl.encode(te.encode(JSON.stringify(o))) : encJSON(o, pretty); }
+function fallback(why) { if (C.onFallback) try { C.onFallback(why); } catch (e) {} }
+function encode(o, pretty) {
+  if (C.mode !== 'bin') return encJSON(o, pretty);
+  if (!C.impl) { fallback('binary codec not loaded'); return encJSON(o, pretty); }
+  try { const b = C.impl.encode(te.encode(JSON.stringify(o))); if (!isBinary(b)) throw new Error('codec output has no atlas magic'); return b; }
+  catch (e) { fallback('binary encode failed: ' + e.message); return encJSON(o, pretty); } }
 function decode(bytes) {
   if (isBinary(bytes)) { if (!C.impl) { const e = new Error('binary segment but binary codec not loaded'); e.needCodec = true; throw e; } return JSON.parse(td.decode(C.impl.decode(bytes))); }
   return JSON.parse(td.decode(bytes)); }
 const encodePack = o => encode(o, false), encodeSegment = seg => encode(seg, true), decodeSegment = decode, encodeSnapshot = s => encode(s, true), decodeSnapshot = decode;
-const segmentExt = () => C.mode === 'bin' ? '.bin' : '.json';
+const extOf = bytes => isBinary(bytes) ? '.bin' : '.json';          // name a file from the bytes actually produced
+const segmentExt = () => codecMode() === 'bin' ? '.bin' : '.json';
 
 /* ---------- op rules (doc 42 §3.7, ADR 0108; same as client.html v2) ---------- */
 function applyOp(S, op, writer, seq) {
@@ -204,30 +214,43 @@ function useSnapshot(snap, entries) {
   return { S: snap.S, covered: cov }; }
 
 const api = { MAX_OPS, SEG_SOFT, SEG_HARD, clone, pad, setListRule, isList: p => isList(p), applyOp, applyBatch, cmpOrder, entry, keyOf, replay, stateDigest,
-  setBinaryCodec, setCodecMode, codecMode, isBinary, encodeSegment, decodeSegment, encodePack, encodeSnapshot, decodeSnapshot, segmentExt, parsePath, checkSegment, sizeCheck,
+  setBinaryCodec, setCodecMode, codecMode, codecPref, onCodecFallback, extOf, isBinary, encodeSegment, decodeSegment, encodePack, encodeSnapshot, decodeSnapshot, segmentExt, parsePath, checkSegment, sizeCheck,
   planPacks, packBody, unpack, makeSnapshot, useSnapshot };
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.Exp7Sync = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 /* EXP7-CORE-END */
 </script>
+<script id="atlas-codec">/* ATLAS-CODEC-BEGIN (generated by tools/embed_codec.js; do not edit) */
+/* ATLAS-CODEC-END */</script>
 <script>
 'use strict';
-/* ================= codec hooks (drop the binary atlas codec in here) =================
-   All four take/return Uint8Array <-> JS objects. Default = JSON (debug form). */
+/* ================= codec hooks (binary atlas/1 default, JSON debug/fallback) =================
+   All four take/return Uint8Array <-> JS objects. Default = binary atlas/1; JSON = debug form. */
 const X7 = Exp7Sync;   // shared core (doc 47 P0): replay, validator, ordering, codec, packs, snapshots
 const encodeSegment = X7.encodeSegment, decodeSegment = X7.decodeSegment, encodeSnapshot = X7.encodeSnapshot, decodeSnapshot = X7.decodeSnapshot;
-/* Binary atlas/1 codec (opt-in; JSON stays default): ?codec=bin or the 'Binary segments' box. The codec (glue + wasm, ~0.5 MB base64)
-   is NOT embedded; it is loaded on demand from atlas_codec.bundle.js next to this page (or ?codecsrc=), built by tools/build_codec_bundle.sh.
-   Readers auto-load it when they meet a binary segment (magic JRBW). */
+/* Binary atlas/1 codec = the PRIMARY write format (segments, packs, snapshots -> .bin). JSON stays readable and is written only with
+   ?codec=json or the 'Write JSON (debug)' box. Codec source, in order: a copy embedded in this file between the ATLAS-CODEC markers
+   (tools/embed_codec.js; the public repo ships them EMPTY because the codec is the Artist's code), else atlas_codec.bundle.js next to
+   this page (or ?codecsrc=URL), loaded once at startup. ?nocodec=1 simulates a load failure. If no codec is available, or an encode
+   fails, that batch is written as JSON with a visible warning: changes never fail and nothing is dropped. */
 let codecLoading = null;
+function codecWarn(msg){ const w=$('codecWarn'); if (w){ w.hidden=!msg; w.textContent=msg?'⚠ '+msg:''; } }
+let codecReady = false;
+function initCodec(){ if (codecReady) return true;
+  if (Q.get('nocodec')==='1' || !window.AtlasCodec || !window.ATLAS_CODEC_WASM) return false;
+  try { X7.setBinaryCodec(AtlasCodec.create(ATLAS_CODEC_WASM)); return codecReady = true; } catch(e){ err('Binary codec: embedded codec failed: '+e.message); return false; } }
 function loadCodec(){
+  if (Q.get('nocodec')!=='1' && window.AtlasCodec && initCodec()) return Promise.resolve(true);
   if (codecLoading) return codecLoading;
-  codecLoading = new Promise((res, rej)=>{ if (window.AtlasCodec && window.ATLAS_CODEC_WASM) return res();
-    const s=document.createElement('script'); s.src=Q.get('codecsrc')||'atlas_codec.bundle.js'; s.onload=()=>res(); s.onerror=()=>rej(new Error('cannot load '+s.src)); document.head.append(s); })
-   .then(()=>{ X7.setBinaryCodec(AtlasCodec.create(ATLAS_CODEC_WASM)); ev('binary atlas codec loaded'); return true; })
-   .catch(e=>{ codecLoading=null; err('Binary codec: '+e.message+' (build it with tools/build_codec_bundle.sh)'); return false; });
+  codecLoading = new Promise((res, rej)=>{ if (Q.get('nocodec')==='1') return rej(new Error('cannot load (?nocodec=1)')); const src=Q.get('codecsrc')||'atlas_codec.bundle.js';
+    const s=document.createElement('script'); s.src=src; s.onload=()=>res(); s.onerror=()=>rej(new Error('cannot load '+s.src)); document.head.append(s); })
+   .then(()=>{ X7.setBinaryCodec(AtlasCodec.create(ATLAS_CODEC_WASM)); codecReady = true; ev('binary atlas codec loaded'); return true; })
+   .catch(e=>{ err('Binary codec: '+e.message+' (writes fall back to JSON)'); return false; });   // not retried: one failure, no load loop
   return codecLoading; }
-async function setCodec(bin){ if (bin){ if (!(await loadCodec())){ $('fCodec').checked=false; return; } X7.setCodecMode('bin'); } else X7.setCodecMode('json'); ev(`segments written as ${X7.codecMode()==='bin'?'binary atlas/1 (.bin)':'JSON (.json)'}`); }
+X7.onCodecFallback(why=>{ const m=`Binary codec unavailable (${why}): this write was saved as JSON instead; nothing lost.`; A.codecFallbacks=(A.codecFallbacks||0)+1; codecWarn(m); err(m); });
+async function setCodec(json){ X7.setCodecMode(json?'json':'bin'); if (!json) await loadCodec();
+  codecWarn(X7.codecPref()==='bin' && X7.codecMode()!=='bin' ? 'Binary codec unavailable: writes fall back to JSON (nothing lost).' : '');
+  ev(`segments written as ${X7.codecMode()==='bin'?'binary atlas/1 (.bin)':'JSON (.json)'+(json?' (debug)':' (fallback)')}`); }
 /* ================= helpers ================= */
 const $ = id => document.getElementById(id);
 const Q = new URLSearchParams(location.search);
@@ -336,15 +359,16 @@ async function pump(){
         const wait = A.lastWriteAt + 1000 - Date.now(); if (wait>0) await sleep(wait);
         if (b.seq == null) b.seq = A.nextSeq;
         if (b.ts == null){ b.ts = Math.max(Date.now(), A.lastTs+1); A.lastTs = b.ts; }
-        const path = `${A.logRoot}/${A.writer}/${pad(b.seq)}${X7.segmentExt()}`;
+        if (X7.codecPref()==='bin' && codecLoading) await codecLoading;   // resolves true/false, never throws: a failure means JSON fallback
         const seg = {v:2, atlas:'demo', writer:A.writer, seq:b.seq, ts:b.ts, createdAt:new Date(b.ts).toISOString(), ops:b.ops};
+        const bytes = encodeSegment(seg), path = `${A.logRoot}/${A.writer}/${pad(b.seq)}${X7.extOf(bytes)}`;   // .bin, or .json on fallback
         b.state='writing'; renderQueue();
         let r, j={};
         try {
           A.lastWriteAt = Date.now();
           // no "branch": the Contents API uses the default branch, and creates it on an empty repo
           r = await fetch(api(`/repos/${A.ownRepo}/contents/${repoPath(path)}`), {method:'PUT', headers:hdr({'Content-Type':'application/json'}),
-            body: JSON.stringify({message:`atlas:demo writer:${A.writer} seq:${b.seq}-${b.seq}`, content:b64enc(encodeSegment(seg))})});
+            body: JSON.stringify({message:`atlas:demo writer:${A.writer} seq:${b.seq}-${b.seq}`, content:b64enc(bytes)})});
           trackRate(r); try { j = await r.json(); } catch {}
         } catch(e){ r = null; err(`Write failed (network/CORS): ${e.message}`); }
         if (r && (r.status===201 || r.status===200)){
@@ -469,6 +493,7 @@ async function readTree(full, sha){
    Readers treat a pack exactly like its singles (same keys). Nothing to pack = no request, no change (rule 14). */
 async function gh(method, path, body){ const r = await fetch(api(path), {method, headers:hdr({'Content-Type':'application/json'}), body:body?JSON.stringify(body):undefined}); trackRate(r); let j={}; try{ j=await r.json(); }catch{} if (r.status===401) on401('compaction'); return {r, j}; }
 async function compactOwn(o={}){
+  if (X7.codecPref()==='bin' && codecLoading) await codecLoading;
   if (!A.token || !A.ownRepo || !A.synced) { err('Compaction needs sign-in and a synced own repo'); return {packs:0}; }
   if (A.pending.some(b=>b.state!=='written')) { err('Compaction waits until the write queue is empty'); return {packs:0}; }
   const pre = A.logRoot.replace(/\/$/,'') + '/';
@@ -480,7 +505,7 @@ async function compactOwn(o={}){
     const entries = [];
     for (const g of groups){ const bytes = X7.encodePack(X7.packBody(A.writer, g)); const sz = X7.sizeCheck(bytes);
       const bl = await gh('POST', `/repos/${A.ownRepo}/git/blobs`, {content:b64enc(bytes), encoding:'base64'}); if (!bl.r.ok){ err(`compaction: blob ${bl.r.status}`); return {packs:0}; }
-      entries.push({path:`${pre}${A.writer}/pack-${pad(g[0].seq)}-${pad(g[g.length-1].seq)}${X7.segmentExt()}`, mode:'100644', type:'blob', sha:bl.j.sha});
+      entries.push({path:`${pre}${A.writer}/pack-${pad(g[0].seq)}-${pad(g[g.length-1].seq)}${X7.extOf(bytes)}`, mode:'100644', type:'blob', sha:bl.j.sha});
       for (const sg of g) { const c = A.confirmed.get(X7.keyOf(A.ownRepo, A.writer, sg.seq)); entries.push({path:c.path, mode:'100644', type:'blob', sha:null}); }
       if (sz.soft) ev(`compaction: pack ${g[0].seq}-${g[g.length-1].seq} is ${sz.n} B (over the 256 KB soft limit: one oversize segment)`); }
     const tr = await gh('POST', `/repos/${A.ownRepo}/git/trees`, {base_tree:cm.j.tree.sha, tree:entries}); if (!tr.r.ok){ err(`compaction: tree ${tr.r.status}`); return {packs:0}; }
@@ -494,11 +519,12 @@ async function compactOwn(o={}){
   err('compaction: gave up after 3 non-fast-forward retries (nothing changed)'); return {packs:0};
 }
 async function publishSnapshot(){
+  if (X7.codecPref()==='bin' && codecLoading) await codecLoading;
   if (!A.token || !A.ownRepo || !A.synced) { err('Snapshot needs sign-in and a synced own repo'); return null; }
   const snap = X7.makeSnapshot(sortedConfirmed(), SEED, {writer:A.writer, codec:X7.codecMode(), schema:'exp7/1'});
   if (A.snap) { err('Snapshot publishing from a snapshot-based view is not supported (would cover unread segments)'); return null; }
-  const n = (A.snapN = (A.snapN||0)+1), path = `snapshots/${A.writer}/snap-${pad(Date.now()%1e6*1000+n)}${X7.segmentExt()}`;
-  const {r, j} = await gh('PUT', `/repos/${A.ownRepo}/contents/${repoPath(path)}`, {message:`atlas:demo writer:${A.writer} snapshot ${snap.covered.length}`, content:b64enc(encodeSnapshot(snap))});
+  const sb = encodeSnapshot(snap), n = (A.snapN = (A.snapN||0)+1), path = `snapshots/${A.writer}/snap-${pad(Date.now()%1e6*1000+n)}${X7.extOf(sb)}`;
+  const {r, j} = await gh('PUT', `/repos/${A.ownRepo}/contents/${repoPath(path)}`, {message:`atlas:demo writer:${A.writer} snapshot ${snap.covered.length}`, content:b64enc(sb)});
   if (r.status===201){ ev(`published snapshot ${path} (${snap.covered.length} segments)`,'ev-ok'); return path; } err(`snapshot write ${r.status}: ${j.message||''}`); return null;
 }
 
@@ -722,7 +748,7 @@ $('fCodec').onchange=()=>setCodec($('fCodec').checked);
 $('bDownload').onclick=()=>{
   const snap = {writer:A.writer, ownRepo:A.ownRepo, peers:A.peers, heads:Object.fromEntries([...A.repos].map(([k,v])=>[k,v.sha])), values:A.view.v, revisions:A.view.rev,
     segments:sortedConfirmed().map(c=>({repo:c.repo, path:c.path, order:c.order})), pending:A.pending.filter(b=>b.state!=='written').map(b=>({seq:b.seq,ops:b.ops}))};
-  const blob = new Blob([encodeSnapshot(snap)], {type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`atlas-state-${A.writer||'reader'}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  const blob = new Blob([JSON.stringify(snap, null, 1)], {type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`atlas-state-${A.writer||'reader'}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
 };
 // init
 $('fWriter').value = Q.get('writer')||''; $('fRepoName').value = Q.get('reponame')||DEFAULT_REPO_NAME;
@@ -732,6 +758,8 @@ $('fLogRoot').value = Q.get('logroot')||'log';
 A.useSnap = Q.get('usesnap')==='1';
 if (Q.get('anonmin')!=null) A.anonMinPerRepo = Math.max(0, +Q.get('anonmin')||0);
 restorePending(false);
+if (Q.get('codec')==='json') $('fCodec').checked=true;
+X7.setCodecMode($('fCodec').checked?'json':'bin'); if (!initCodec() && X7.codecPref()==='bin') loadCodec().then(()=>setCodec(false));
 readSettings();
 A.view = {v:clone(SEED), rev:{}}; render();
 diag(`page loaded: origin "${location.origin}", protocol ${location.protocol}, secure context ${window.isSecureContext}`);
@@ -739,7 +767,6 @@ diag(`page loaded: origin "${location.origin}", protocol ${location.protocol}, s
   try { const t = sessionStorage.getItem(TOKEN_KEY); if (t){ $('fRemember').checked = true; await connect(t, true); } } catch {}
   let st=null; try { st = JSON.parse(sessionStorage.getItem(PENDING_KEY)||'null'); } catch {}
   if (st && st.kind==='newrepo' && A.token){ await checkOwnRepo(true); if (A.ownExists) clearPending(); }
-  if (Q.get('codec')==='bin'){ $('fCodec').checked=true; await setCodec(true); }
   if (Q.get('autostart')==='1') start();
 })();
 window.addEventListener('pageshow', e=>{ if (e.persisted) restorePending(true); });

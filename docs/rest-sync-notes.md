@@ -95,3 +95,13 @@ atlas/<atlasId>/
 - Retroactive events: event dedupe keys include the previous owner, so a late segment that sorts in front is reported.
 - Size: a 5000-op segment is 391,865 B as JSON (over the 256 KB soft limit, allowed up to the 1 MB hard limit) and 9,721 B as atlas/1 binary.
 - The mock gained the Git Data API (blobs, trees with sha:null deletes, commits, and a fast-forward-only ref PATCH with 422).
+
+## Binary codec is the primary write format (2026-11-02, Matthew's decision)
+- Segments, packs and snapshots are written as binary atlas/1 (`.bin`, `JRBA` magic) by default; `?codec=json` / **Write JSON (debug)**
+  in the page and `--codec json` in the CLI write JSON. Readers detect the format by magic bytes, so mixed logs replay identically.
+- File names come from the bytes actually written (`extOf`), so a fallback batch is always `.json`, never JSON bytes in a `.bin` file.
+- Codec availability without a backend: embedded copy in `client.html` (`tools/embed_codec.js`, page ~590 KB vs ~68 KB stripped), else
+  `atlas_codec.bundle.js` next to the page, loaded once at startup; writes wait for that load. The public repo ships the page stripped,
+  because the codec is the Artist's code (ADR 0111); embedding it publicly needs Matthew's explicit OK.
+- Never lose a change: no codec / load failure / encode exception -> that batch is JSON, warning shown, queue drains normally.
+- Size limits are unchanged (256 KB soft, 1 MB hard per segment/pack); binary makes them far easier to meet (5000 ops: 9,721 B vs 391,865 B).

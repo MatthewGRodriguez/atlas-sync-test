@@ -10,5 +10,6 @@
 node_modules/
 *.log
 tmp/
-# opt-in binary codec bundle (built locally, ~0.5 MB)
+# binary codec bundle (the Artist's code; built locally, ~0.5 MB; binary is the default write format)
 clients/atlas_codec.bundle.js
+tools/__pycache__/

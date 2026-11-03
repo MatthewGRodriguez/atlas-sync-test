@@ -22,7 +22,7 @@ get('/__mock/mkrepo?full=alice/atlas-sync-log&init=1'); get('/__mock/mkrepo?full
 AL='test-valid-alice-cli'
 try:
     r=cli('propose','[{"op":"set","path":"joys/i1/value","value":8}]', token=AL)
-    check('CLI propose writes log/alice/000001.json', r.returncode==0 and 'log/alice/000001.json' in r.stdout, r.stderr)
+    check('CLI propose writes log/alice/000001.bin', r.returncode==0 and 'log/alice/000001.bin' in r.stdout, r.stderr)
     r=cli('propose','[{"op":"add","path":"joys/i1/value","value":1}]', token=AL)
     check('CLI rejects an invalid batch locally (add on scalar = exists), nothing written', r.returncode!=0 and 'exists' in r.stderr and len(get('/__mock/state')['alice/atlas-sync-log']['commits'])==2, r.stderr)
     r=cli('propose','[{"op":"set","path":"x","value":1}]')
@@ -43,7 +43,7 @@ try:
         # crash between outbox write and PUT: outbox survives -> flush sends with the same seq; re-flush idempotent
         json.dump({'seq':2,'ts':int(time.time()*1000),'ops':[{'op':'set','path':'joys/i3/value','value':1}]}, open(os.path.join(SD,'outbox.json'),'w'))
         r=cli('flush', token=AL)
-        check('outbox recovery: flush writes the pending batch as seq 2', r.returncode==0 and 'log/alice/000002.json' in r.stdout and not os.path.exists(os.path.join(SD,'outbox.json')), r.stdout+r.stderr)
+        check('outbox recovery: flush writes the pending batch as seq 2', r.returncode==0 and 'log/alice/000002.bin' in r.stdout and not os.path.exists(os.path.join(SD,'outbox.json')), r.stdout+r.stderr)
         check('page sees the flushed write', until(B,"A.view.v['joys/i3/value']===1"))
         json.dump({'seq':2,'ts':1,'ops':[{'op':'set','path':'joys/i3/value','value':1}]}, open(os.path.join(SD,'outbox.json'),'w'))
         n=len(get('/__mock/state')['alice/atlas-sync-log']['commits']); r=cli('flush', token=AL)
@@ -53,7 +53,7 @@ try:
         o=w.communicate(timeout=60)[0]
         check('CLI watch prints the page change with owner', 'dates/start/value = "2026-12-02"  (bob)' in o, o)
         jl=open(os.path.join(SD,'journal.ndjson')).read()
-        check('journal holds writes, never the token', 'log/alice/000001.json' in jl and 'test-valid' not in jl and 'test-valid' not in open(os.path.join(ROOT,'clients/atlas-cli.js')).read())
+        check('journal holds writes, never the token', 'log/alice/000001.bin' in jl and 'test-valid' not in jl and 'test-valid' not in open(os.path.join(ROOT,'clients/atlas-cli.js')).read())
         b.close()
 finally: shutil.rmtree(SD, ignore_errors=True)
 print(f"\nRESULT {sum(res)}/{len(res)} passed")

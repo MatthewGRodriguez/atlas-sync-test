@@ -10,20 +10,30 @@ const pad = n => String(n).padStart(6, '0');
 let isList = p => /\/notes$/.test(p);
 function setListRule(f) { isList = f; }
 
-/* ---------- codec (JSON default; binary atlas/1 opt-in via setBinaryCodec) ---------- */
+/* ---------- codec (binary atlas/1 is the PRIMARY write format; JSON = interchange/debug, always readable) ----------
+ * mode is the writer's preference ('bin' default). If the binary codec is not loaded, or its encode throws, that write falls back to
+ * JSON (never fails, never drops ops) and onFallback(reason) is called so the UI/CLI can warn. Readers accept both, by magic bytes. */
 const MAGIC = [74, 82, 66];   // 'JRB' + 'A' (atlas) | 'W' (world, pre-ADR 0106) + version byte: the Artist codec container header
-const C = { mode: 'json', impl: null };
-function setBinaryCodec(impl) { C.impl = impl || null; if (!impl) C.mode = 'json'; }
-function setCodecMode(m) { if (m === 'bin' && !C.impl) throw new Error('binary codec not loaded'); C.mode = m === 'bin' ? 'bin' : 'json'; }
-function codecMode() { return C.mode; }
+const C = { mode: 'bin', impl: null, onFallback: null };
+function setBinaryCodec(impl) { C.impl = impl || null; }
+function setCodecMode(m) { C.mode = m === 'json' ? 'json' : 'bin'; }
+function codecPref() { return C.mode; }
+function codecMode() { return C.mode === 'bin' && C.impl ? 'bin' : 'json'; }   // what the next write will (try to) use
+function onCodecFallback(f) { C.onFallback = f; }
 function isBinary(b) { if (!b || b.length < 5) return false; for (let i = 0; i < 3; i++) if (b[i] !== MAGIC[i]) return false; return (b[3] === 65 || b[3] === 87) && b[4] >= 1 && b[4] < 16; }
 function encJSON(o, pretty) { return te.encode(pretty ? JSON.stringify(o, null, 1) : JSON.stringify(o)); }
-function encode(o, pretty) { return C.mode === 'bin' ? C.impl.encode(te.encode(JSON.stringify(o))) : encJSON(o, pretty); }
+function fallback(why) { if (C.onFallback) try { C.onFallback(why); } catch (e) {} }
+function encode(o, pretty) {
+  if (C.mode !== 'bin') return encJSON(o, pretty);
+  if (!C.impl) { fallback('binary codec not loaded'); return encJSON(o, pretty); }
+  try { const b = C.impl.encode(te.encode(JSON.stringify(o))); if (!isBinary(b)) throw new Error('codec output has no atlas magic'); return b; }
+  catch (e) { fallback('binary encode failed: ' + e.message); return encJSON(o, pretty); } }
 function decode(bytes) {
   if (isBinary(bytes)) { if (!C.impl) { const e = new Error('binary segment but binary codec not loaded'); e.needCodec = true; throw e; } return JSON.parse(td.decode(C.impl.decode(bytes))); }
   return JSON.parse(td.decode(bytes)); }
 const encodePack = o => encode(o, false), encodeSegment = seg => encode(seg, true), decodeSegment = decode, encodeSnapshot = s => encode(s, true), decodeSnapshot = decode;
-const segmentExt = () => C.mode === 'bin' ? '.bin' : '.json';
+const extOf = bytes => isBinary(bytes) ? '.bin' : '.json';          // name a file from the bytes actually produced
+const segmentExt = () => codecMode() === 'bin' ? '.bin' : '.json';
 
 /* ---------- op rules (doc 42 §3.7, ADR 0108; same as client.html v2) ---------- */
 function applyOp(S, op, writer, seq) {
@@ -125,7 +135,7 @@ function useSnapshot(snap, entries) {
   return { S: snap.S, covered: cov }; }
 
 const api = { MAX_OPS, SEG_SOFT, SEG_HARD, clone, pad, setListRule, isList: p => isList(p), applyOp, applyBatch, cmpOrder, entry, keyOf, replay, stateDigest,
-  setBinaryCodec, setCodecMode, codecMode, isBinary, encodeSegment, decodeSegment, encodePack, encodeSnapshot, decodeSnapshot, segmentExt, parsePath, checkSegment, sizeCheck,
+  setBinaryCodec, setCodecMode, codecMode, codecPref, onCodecFallback, extOf, isBinary, encodeSegment, decodeSegment, encodePack, encodeSnapshot, decodeSnapshot, segmentExt, parsePath, checkSegment, sizeCheck,
   planPacks, packBody, unpack, makeSnapshot, useSnapshot };
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.Exp7Sync = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

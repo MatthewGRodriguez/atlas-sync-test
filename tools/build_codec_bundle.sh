@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build clients/atlas_codec.bundle.js (opt-in binary atlas/1 codec for client.html) from the Artist's codec:
+# Build clients/atlas_codec.bundle.js (binary atlas/1 codec, the default write format of client.html and atlas-cli.js; embed with tools/embed_codec.js) from the Artist's codec:
 #   js/atlas_browser.js (glue + AtlasCodec) + the wasm, base64-embedded. Output is ~0.5 MB and is NOT committed (.gitignore).
 # usage: tools/build_codec_bundle.sh <codec dir containing js/atlas_browser.js> [wasm path]
 set -e

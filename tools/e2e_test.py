@@ -106,7 +106,7 @@ with sync_playwright() as p:
     # 2 bob overwrites same path (later ts) -> alice converges + CHANGED
     B.fill('[data-joy=i2]','7'); B.dispatch_event('[data-joy=i2]','change')
     until(B,"A.pending.length===0"); bc=get('/__mock/state')[BOB]['commits']
-    check('first PUT on an empty repo creates main', len(bc)>=1 and bc[0]['files']==['log/bob/000001.json'], bc)
+    check('first PUT on an empty repo creates main', len(bc)>=1 and bc[0]['files']==['log/bob/000001.bin'], bc)
     check('alice converges to bob value 7 (LWW by ts)', until(A,"A.view.v['joys/i2/value']===7 && A.view.rev['joys/i2/value'].owner==='bob'"))
     check('alice got CHANGED event', until(A,"[...document.querySelectorAll('.ev-changed')].some(e=>e.textContent.includes('joys/i2/value') && e.textContent.includes('bob'))"))
     # 3 concurrent deltas add up: seed 3 +2 +3 = 8
