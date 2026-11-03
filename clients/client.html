@@ -35,6 +35,7 @@ ol.steps{margin:6px 0;padding-left:20px}#authMsg{margin-top:6px}#authMsg.warn,.w
  <label>Poll every <input type="number" id="fPoll" min="2" max="300"> s</label><br>
  <label>API base <input type="url" id="fApi" size="28"></label>
  <label>Log root <input type="text" id="fLogRoot" size="10"></label>
+ <label title="opt-in; JSON is the default"><input type="checkbox" id="fCodec"> Binary segments (atlas/1)</label>
  <div style="margin-top:6px"><b>Peers</b> <span class="mut">(other writers' public log repos, <code>owner/repo</code>, comma or newline separated; read without a token)</span><br>
   <textarea id="fPeers" rows="2" cols="48" spellcheck="false" placeholder="alice/atlas-sync-log, bob/atlas-sync-log"></textarea></div>
  <div><button id="bStart" class="pri">Start sync</button> <button id="bStop">Stop</button> <span class="mut">URL params: ?writer=…&amp;peers=a/atlas-sync-log,b/atlas-sync-log&amp;poll=10&amp;reponame=…&amp;api=…</span></div>
@@ -66,7 +67,7 @@ ol.steps{margin:6px 0;padding-left:20px}#authMsg{margin-top:6px}#authMsg.warn,.w
 <section style="margin-top:12px"><h2>Event log</h2><div class="log" id="evlog"></div></section>
 </div>
 <div>
-<section><h2>Status</h2><div class="kv" id="status"></div><div style="margin-top:6px"><button id="bPollNow">Poll now</button> <button id="bDownload">Download state (JSON)</button></div></section>
+<section><h2>Status</h2><div class="kv" id="status"></div><div style="margin-top:6px"><button id="bPollNow">Poll now</button> <button id="bDownload">Download state (JSON)</button> <button id="bCompact" title="pack my own segments (off by default)">Compact my log</button> <button id="bSnap">Publish snapshot</button></div></section>
 <section style="margin-top:12px"><h2>Repos read</h2><div class="log" id="repoView" style="max-height:140px"></div></section>
 <section style="margin-top:12px"><h2>Write queue</h2><div class="log" id="qview" style="max-height:120px"></div></section>
 <section style="margin-top:12px"><h2>Revisions / owners per path</h2><table><thead><tr><th>Path</th><th>Value</th><th>Rev</th><th>Owner</th><th>Last (writer:seq)</th></tr></thead><tbody id="revs"></tbody></table></section>
@@ -75,18 +76,158 @@ ol.steps{margin:6px 0;padding-left:20px}#authMsg{margin-top:6px}#authMsg.warn,.w
 </div>
 </main>
 <script>
+/* EXP7-CORE-BEGIN (generated from clients/exp7-sync-core.js by tools/inline_core.js; edit the .js file) */
+/* exp7-sync-core.js (doc 47 P0): replay, validator, ordering, events, codec hooks, packs, snapshots.
+ * No DOM, no network. Same source runs in Node (require) and is inlined into clients/client.html by
+ * tools/inline_core.js (between the EXP7-CORE markers). SYNTHETIC data only; never a token. */
+(function (root) {
+'use strict';
+const te = new TextEncoder(), td = new TextDecoder();
+const MAX_OPS = 5000, SEG_SOFT = 256 * 1024, SEG_HARD = 1024 * 1024;
+const clone = o => JSON.parse(JSON.stringify(o));
+const pad = n => String(n).padStart(6, '0');
+let isList = p => /\/notes$/.test(p);
+function setListRule(f) { isList = f; }
+
+/* ---------- codec (JSON default; binary atlas/1 opt-in via setBinaryCodec) ---------- */
+const MAGIC = [74, 82, 66];   // 'JRB' + 'A' (atlas) | 'W' (world, pre-ADR 0106) + version byte: the Artist codec container header
+const C = { mode: 'json', impl: null };
+function setBinaryCodec(impl) { C.impl = impl || null; if (!impl) C.mode = 'json'; }
+function setCodecMode(m) { if (m === 'bin' && !C.impl) throw new Error('binary codec not loaded'); C.mode = m === 'bin' ? 'bin' : 'json'; }
+function codecMode() { return C.mode; }
+function isBinary(b) { if (!b || b.length < 5) return false; for (let i = 0; i < 3; i++) if (b[i] !== MAGIC[i]) return false; return (b[3] === 65 || b[3] === 87) && b[4] >= 1 && b[4] < 16; }
+function encJSON(o, pretty) { return te.encode(pretty ? JSON.stringify(o, null, 1) : JSON.stringify(o)); }
+function encode(o, pretty) { return C.mode === 'bin' ? C.impl.encode(te.encode(JSON.stringify(o))) : encJSON(o, pretty); }
+function decode(bytes) {
+  if (isBinary(bytes)) { if (!C.impl) { const e = new Error('binary segment but binary codec not loaded'); e.needCodec = true; throw e; } return JSON.parse(td.decode(C.impl.decode(bytes))); }
+  return JSON.parse(td.decode(bytes)); }
+const encodePack = o => encode(o, false), encodeSegment = seg => encode(seg, true), decodeSegment = decode, encodeSnapshot = s => encode(s, true), decodeSnapshot = decode;
+const segmentExt = () => C.mode === 'bin' ? '.bin' : '.json';
+
+/* ---------- op rules (doc 42 §3.7, ADR 0108; same as client.html v2) ---------- */
+function applyOp(S, op, writer, seq) {
+  const p = op.path; if (typeof p !== 'string' || !p) return { status: 'rejected', reason: 'bad path' };
+  const has = Object.prototype.hasOwnProperty.call(S.v, p); const before = has ? clone(S.v[p]) : undefined;
+  let after, status = 'applied';
+  switch (op.op) {
+    case 'set': case 'ref': after = op.op === 'ref' ? op.target ?? op.value : op.value; if (has && JSON.stringify(before) === JSON.stringify(after)) status = 'noop'; break;
+    case 'delta': { const by = Number(op.by ?? op.value); if (!isFinite(by)) return { status: 'rejected', reason: 'delta not a number' };
+      if (has && typeof before !== 'number') return { status: 'rejected', reason: 'delta on non-number' }; after = (has ? before : 0) + by; if (by === 0) status = 'noop'; break; }
+    case 'add':
+      if (isList(p)) { const L = has ? before : []; if (L.includes(op.value)) status = 'noop'; else after = L.concat([op.value]); }
+      else if (has) return { status: 'rejected', reason: 'exists' }; else after = op.value; break;
+    case 'remove':
+      if (!has) status = 'noop';
+      else if (isList(p) && op.value !== undefined) { if (!before.includes(op.value)) status = 'noop'; else after = before.filter(x => x !== op.value); }
+      else after = undefined; break;
+    default: return { status: 'rejected', reason: 'unknown op ' + op.op };
+  }
+  if (status === 'noop') return { status };
+  const prev = S.rev[p] || { rev: 0, owner: null };
+  if (after === undefined) delete S.v[p]; else S.v[p] = after;
+  const res = { status };
+  if (has && prev.owner && prev.owner !== writer) res.changed = { path: p, from: before, prevOwner: prev.owner, prevLast: prev.last || null };
+  S.rev[p] = { rev: prev.rev + 1, owner: writer, last: writer + ':' + seq };
+  return res;
+}
+function applyBatch(S, seg) {
+  const ops = Array.isArray(seg.ops) ? seg.ops : [];
+  if (ops.length > MAX_OPS) return { rejected: 'batch too large', results: [] };
+  const results = ops.map(o => applyOp(S, o, seg.writer, seg.seq));
+  return { results, changed: results.filter(r => r.changed).map(r => r.changed) };
+}
+
+/* ---------- ordering: [ts, writer, seq, repo], last write wins ---------- */
+function cmpOrder(a, b) { const x = a.order, y = b.order;
+  return (x[0] - y[0]) || (x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0) || (x[2] - y[2]) || (x[3] < y[3] ? -1 : x[3] > y[3] ? 1 : 0); }
+const segTs = seg => Number.isFinite(+seg.ts) ? +seg.ts : (Date.parse(seg.createdAt) || 0);
+const entry = (repo, seg, path) => ({ seg, order: [segTs(seg), seg.writer, +seg.seq, repo], repo, path: path || null });
+const keyOf = (repo, writer, seq) => `${repo}:${writer}:${seq}`;
+
+/* replay(entries, seed, {from}) -> {S, outcomes:[{key, changed:[{path, from}]}], events:[...]}
+ * events: {type:'changed', path, by, seq, from (value), prevOwner}  - every accepted overwrite of another writer's value
+ *         {type:'overwrote', path, yours:'w:seq', theirs:'w:seq', by, to:'owner'} - addressed to prevOwner (doc 47 §4.4)
+ * from = {S, covered:Set(keys)} starts from a snapshot state and skips covered entries. */
+function replay(entries, seed, o) {
+  o = o || {}; const S = o.from ? clone(o.from.S) : { v: clone(seed), rev: {} }, outcomes = [], events = [];
+  const list = entries.slice().sort(cmpOrder);
+  for (const c of list) {
+    const k = keyOf(c.repo, c.seg.writer, c.seg.seq); if (o.from && o.from.covered.has(k)) continue;
+    const r = applyBatch(S, c.seg); const ch = [];
+    r.results.forEach((res, i) => { if (!res.changed) return; ch.push({ path: res.changed.path, from: res.changed.prevOwner });
+      events.push({ type: 'changed', key: k, op: i, path: res.changed.path, by: c.seg.writer, seq: c.seg.seq, from: res.changed.from, prevOwner: res.changed.prevOwner });
+      events.push({ type: 'overwrote', key: k, op: i, path: res.changed.path, to: res.changed.prevOwner, yours: res.changed.prevLast, theirs: c.seg.writer + ':' + c.seg.seq, by: c.seg.writer }); });
+    outcomes.push({ key: k, results: r.results, changed: ch, rejected: r.rejected || null });
+  }
+  return { S, outcomes, events };
+}
+/* canonical state bytes (convergence check): sorted keys */
+function stateDigest(S) { const v = {}, r = {}; Object.keys(S.v).sort().forEach(k => v[k] = S.v[k]); Object.keys(S.rev).sort().forEach(k => r[k] = S.rev[k]); return JSON.stringify({ v, rev: r }); }
+
+/* ---------- segment paths, validation, sizes ---------- */
+function parsePath(rel) { // rel = path below logRoot/: '<w>/<seq>.<ext>' or '<w>/pack-<first>-<last>.<ext>'
+  let m = rel.match(/^([^/]+)\/(\d+)\.\w+$/); if (m) return { kind: 'seg', writer: m[1], seq: +m[2] };
+  m = rel.match(/^([^/]+)\/pack-(\d+)-(\d+)\.\w+$/); if (m) return { kind: 'pack', writer: m[1], first: +m[2], last: +m[3] };
+  return null; }
+function checkSegment(seg, writer, seq) { return !!seg && seg.writer === writer && +seg.seq === seq; }
+function sizeCheck(bytes) { const n = bytes.length; return { n, soft: n > SEG_SOFT, hard: n > SEG_HARD }; }
+
+/* ---------- per-writer packs (doc 47 §5.5): own segments only, contiguous, never auto-split ---------- */
+/* planPacks(segs sorted by seq, {soft, hard, min}) -> [[seg...],...]: groups of >= min segments; a group closes before it would pass
+ * soft bytes; a single segment over soft becomes its own group only if <= hard (never split); groups must be contiguous seqs. */
+function packBody(writer, segs) { return { v: 2, pack: 1, writer, first: segs[0].seq, last: segs[segs.length - 1].seq, segments: segs }; }
+function planPacks(segs, o) {
+  o = o || {}; const soft = o.soft || SEG_SOFT, hard = o.hard || SEG_HARD, min = o.min || 2, out = []; let cur = [];
+  const size = g => encodePack(packBody(g[0].writer, g)).length;
+  const close = () => { if (cur.length >= min) out.push(cur); cur = []; };
+  for (const s of segs) {
+    if (cur.length && +s.seq !== +cur[cur.length - 1].seq + 1) close();
+    const trial = cur.concat([s]);
+    if (cur.length && size(trial) > soft) { close(); cur = [s]; } else cur = trial;
+    if (cur.length === 1 && size(cur) > hard) cur = []; // oversize single: left as a single file, never packed
+  }
+  close(); return out; }
+function unpack(body, writer, first, last) {
+  if (!body || body.pack !== 1 || body.writer !== writer || body.first !== first || body.last !== last || !Array.isArray(body.segments)) throw new Error('bad pack header');
+  body.segments.forEach((s, i) => { if (!checkSegment(s, writer, first + i)) throw new Error('pack segment ' + i + ' does not match ' + writer + ':' + (first + i)); });
+  if (body.segments.length !== last - first + 1) throw new Error('pack length mismatch'); return body.segments; }
+
+/* ---------- snapshots (doc 47 §5.5): a cache, never a replacement for the log ---------- */
+/* makeSnapshot(entries, seed) -> {v:1, snapshot:1, covered:[keys], frontier:order, S}; valid for a reader iff every entry it knows that
+ * sorts at or before the frontier is covered and every covered key is known or unreadable-but-covered. useSnapshot returns {from} or null. */
+function makeSnapshot(entries, seed, meta) { const list = entries.slice().sort(cmpOrder); const r = replay(list, seed);
+  return Object.assign({ v: 1, snapshot: 1, covered: list.map(c => keyOf(c.repo, c.seg.writer, c.seg.seq)), frontier: list.length ? list[list.length - 1].order : null, S: r.S }, meta || {}); }
+function useSnapshot(snap, entries) {
+  if (!snap || snap.snapshot !== 1 || !Array.isArray(snap.covered)) return null; const cov = new Set(snap.covered);
+  for (const c of entries) { const k = keyOf(c.repo, c.seg.writer, c.seg.seq);
+    if (!cov.has(k) && snap.frontier && cmpOrder(c, { order: snap.frontier }) <= 0) return null; } // a late segment sorts inside: rebuild
+  return { S: snap.S, covered: cov }; }
+
+const api = { MAX_OPS, SEG_SOFT, SEG_HARD, clone, pad, setListRule, isList: p => isList(p), applyOp, applyBatch, cmpOrder, entry, keyOf, replay, stateDigest,
+  setBinaryCodec, setCodecMode, codecMode, isBinary, encodeSegment, decodeSegment, encodePack, encodeSnapshot, decodeSnapshot, segmentExt, parsePath, checkSegment, sizeCheck,
+  planPacks, packBody, unpack, makeSnapshot, useSnapshot };
+if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.Exp7Sync = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+/* EXP7-CORE-END */
+</script>
+<script>
 'use strict';
 /* ================= codec hooks (drop the binary atlas codec in here) =================
    All four take/return Uint8Array <-> JS objects. Default = JSON (debug form). */
-const te = new TextEncoder(), td = new TextDecoder();
-function encodeSegment(seg){ return te.encode(JSON.stringify(seg, null, 1)); }
-function decodeSegment(bytes){ return JSON.parse(td.decode(bytes)); }
-function encodeSnapshot(snap){ return te.encode(JSON.stringify(snap, null, 1)); }
-function decodeSnapshot(bytes){ return JSON.parse(td.decode(bytes)); }
-const SEGMENT_EXT = '.json'; // change to '.bin' with the binary codec
-/* Compaction: deferred. Placeholder only. */
-function compact(){ throw new Error('compaction not implemented in this test (deferred)'); }
-
+const X7 = Exp7Sync;   // shared core (doc 47 P0): replay, validator, ordering, codec, packs, snapshots
+const encodeSegment = X7.encodeSegment, decodeSegment = X7.decodeSegment, encodeSnapshot = X7.encodeSnapshot, decodeSnapshot = X7.decodeSnapshot;
+/* Binary atlas/1 codec (opt-in; JSON stays default): ?codec=bin or the 'Binary segments' box. The codec (glue + wasm, ~0.5 MB base64)
+   is NOT embedded; it is loaded on demand from atlas_codec.bundle.js next to this page (or ?codecsrc=), built by tools/build_codec_bundle.sh.
+   Readers auto-load it when they meet a binary segment (magic JRBW). */
+let codecLoading = null;
+function loadCodec(){
+  if (codecLoading) return codecLoading;
+  codecLoading = new Promise((res, rej)=>{ if (window.AtlasCodec && window.ATLAS_CODEC_WASM) return res();
+    const s=document.createElement('script'); s.src=Q.get('codecsrc')||'atlas_codec.bundle.js'; s.onload=()=>res(); s.onerror=()=>rej(new Error('cannot load '+s.src)); document.head.append(s); })
+   .then(()=>{ X7.setBinaryCodec(AtlasCodec.create(ATLAS_CODEC_WASM)); ev('binary atlas codec loaded'); return true; })
+   .catch(e=>{ codecLoading=null; err('Binary codec: '+e.message+' (build it with tools/build_codec_bundle.sh)'); return false; });
+  return codecLoading; }
+async function setCodec(bin){ if (bin){ if (!(await loadCodec())){ $('fCodec').checked=false; return; } X7.setCodecMode('bin'); } else X7.setCodecMode('json'); ev(`segments written as ${X7.codecMode()==='bin'?'binary atlas/1 (.bin)':'JSON (.json)'}`); }
 /* ================= helpers ================= */
 const $ = id => document.getElementById(id);
 const Q = new URLSearchParams(location.search);
@@ -113,44 +254,14 @@ const SEED = {
   'alts/g1/opts/o3/name':'Camping','alts/g1/opts/o3/pref':0,'alts/g1/opts/o3/unavail':true,
   'jreq/i3/value':'i1','dates/start/value':'2026-12-01'
 };
-const isList = p => /\/notes$/.test(p);
+const isList = X7.isList;
 
 /* ================= op rules (Exp7 proposal rules summary) =================
  set: overwrite, no stale check. delta: numeric add (missing = 0). ref: like set, value is an id.
  add: list member already present = no-op; missing path = create; existing scalar = rejected 'exists'.
  remove: missing (path or member) = no-op. Applied overwrite by another writer => changed {path,from}.
  Revisions are per path; ownership goes to the writer who last changed the path. */
-function applyOp(S, op, writer, seq){
-  const p = op.path; if (typeof p !== 'string' || !p) return {status:'rejected', reason:'bad path'};
-  const has = Object.prototype.hasOwnProperty.call(S.v, p); const before = has ? clone(S.v[p]) : undefined;
-  let after, status = 'applied';
-  switch (op.op){
-    case 'set': case 'ref': after = op.op==='ref' ? op.target ?? op.value : op.value; if (has && JSON.stringify(before)===JSON.stringify(after)) status='noop'; break;
-    case 'delta': { const by = Number(op.by ?? op.value); if (!isFinite(by)) return {status:'rejected',reason:'delta not a number'};
-      if (has && typeof before !== 'number') return {status:'rejected',reason:'delta on non-number'}; after = (has?before:0)+by; if (by===0) status='noop'; break; }
-    case 'add':
-      if (isList(p)){ const L = has ? before : []; if (L.includes(op.value)) status='noop'; else after = L.concat([op.value]); }
-      else if (has) return {status:'rejected', reason:'exists'}; else after = op.value; break;
-    case 'remove':
-      if (!has) status='noop';
-      else if (isList(p) && op.value !== undefined){ if (!before.includes(op.value)) status='noop'; else after = before.filter(x=>x!==op.value); }
-      else after = undefined; break;
-    default: return {status:'rejected', reason:'unknown op '+op.op};
-  }
-  if (status==='noop') return {status};
-  const prev = S.rev[p] || {rev:0, owner:null};
-  if (after===undefined) delete S.v[p]; else S.v[p]=after;
-  const res = {status};
-  if (has && prev.owner && prev.owner!==writer) res.changed = {path:p, from:before, prevOwner:prev.owner};
-  S.rev[p] = {rev:prev.rev+1, owner:writer, last:writer+':'+seq};
-  return res;
-}
-function applyBatch(S, seg){
-  const ops = Array.isArray(seg.ops) ? seg.ops : [];
-  if (ops.length > MAX_OPS) return {rejected:'batch too large', results:[]};
-  const results = ops.map(o => applyOp(S, o, seg.writer, seg.seq));
-  return {results, changed: results.filter(r=>r.changed).map(r=>r.changed)};
-}
+const applyOp = X7.applyOp, applyBatch = X7.applyBatch;
 
 /* ================= app state =================
    Multi-repo design: every writer writes ONLY to its own public repo <login>/<repoName> (log/<writer>/<seq>.json)
@@ -164,7 +275,7 @@ const A = {
   pending:[],                  // local batches: {id, ops, seq?, ts?, state:'queued'|'writing'|'written', repoKey?}
   nextSeq:1, lastTs:0, synced:false, running:false, pollTimer:null, backoff:1, polling:false,
   lastPoll:'-', lastPollResult:'-', rate:'-', rateLimit:'-', rateReset:null, errors:[], lastWriteAt:0,
-  seenEvents:new Set(), view:null, writing:false
+  seenEvents:new Set(), view:null, writing:false, reports:[], useSnap:false, snap:null, snapCovered:null, snapSeen:new Set()
 };
 
 function ev(text, cls=''){ const d=document.createElement('div'); d.className=cls; d.textContent=`[${now()}] ${text}`; $('evlog').prepend(d); }
@@ -172,18 +283,21 @@ function err(text){ A.errors.unshift(`[${now()}] ${text}`); A.errors.length=Math
 function diag(text){ const d=document.createElement('div'); d.textContent=`[${new Date().toISOString()}] ${text}`; $('diag').append(d); }
 
 /* ================= replay ================= */
-function cmpOrder(a,b){
-  const x=a.order, y=b.order;
-  return (x[0]-y[0]) || (x[1]<y[1]?-1:x[1]>y[1]?1:0) || (x[2]-y[2]) || (x[3]<y[3]?-1:x[3]>y[3]?1:0);
-}
+const cmpOrder = X7.cmpOrder;
 function sortedConfirmed(){ return [...A.confirmed.values()].sort(cmpOrder); }
 function rebuild(){
-  const S = {v:clone(SEED), rev:{}};
+  let S = {v:clone(SEED), rev:{}};
+  if (A.snap){ const from = X7.useSnapshot(A.snap, [...A.confirmed.values()]);
+    if (from) S = clone(from.S);
+    else { ev('snapshot no longer matches the log (a late segment sorts inside it); dropping it and re-reading all segments'); A.snap=null; A.snapCovered=null; A.confirmed.clear(); for (const st of A.repos.values()){ st.sha=null; st.etag=null; } schedulePoll(0); } }
   for (const c of sortedConfirmed()){
     const r = applyBatch(S, c.seg);
     for (const [i,res] of r.results.entries()){
-      const key = `${c.repo}:${c.seg.writer}:${c.seg.seq}:${i}`;
+      // the key includes whom this op overwrote, so a late segment that sorts in front is reported retroactively (doc 47 §4.2)
+      const key = `${c.repo}:${c.seg.writer}:${c.seg.seq}:${i}:${res.changed?res.changed.prevOwner:''}`;
       if (A.seenEvents.has(key)) continue; A.seenEvents.add(key);
+      if (res.changed && c.seg.writer === A.writer){ A.reports.push({type:'changed', path:res.changed.path, from:res.changed.prevOwner, seq:c.seg.seq}); ev(`your ${c.seg.writer}:${c.seg.seq} changed ${res.changed.path} (was ${JSON.stringify(res.changed.from)} by ${res.changed.prevOwner})`,'ev-ok'); }
+      if (res.changed && res.changed.prevOwner === A.writer) A.reports.push({type:'overwrote', path:res.changed.path, yours:res.changed.prevLast, theirs:`${c.seg.writer}:${c.seg.seq}`, by:c.seg.writer, now:S.v[res.changed.path]});
       if (c.seg.writer === A.writer) continue;
       const op = c.seg.ops[i];
       if (res.changed && res.changed.prevOwner === A.writer)
@@ -222,7 +336,7 @@ async function pump(){
         const wait = A.lastWriteAt + 1000 - Date.now(); if (wait>0) await sleep(wait);
         if (b.seq == null) b.seq = A.nextSeq;
         if (b.ts == null){ b.ts = Math.max(Date.now(), A.lastTs+1); A.lastTs = b.ts; }
-        const path = `${A.logRoot}/${A.writer}/${pad(b.seq)}${SEGMENT_EXT}`;
+        const path = `${A.logRoot}/${A.writer}/${pad(b.seq)}${X7.segmentExt()}`;
         const seg = {v:2, atlas:'demo', writer:A.writer, seq:b.seq, ts:b.ts, createdAt:new Date(b.ts).toISOString(), ops:b.ops};
         b.state='writing'; renderQueue();
         let r, j={};
@@ -234,7 +348,7 @@ async function pump(){
           trackRate(r); try { j = await r.json(); } catch {}
         } catch(e){ r = null; err(`Write failed (network/CORS): ${e.message}`); }
         if (r && (r.status===201 || r.status===200)){
-          b.state='written'; b.repoKey=`${A.ownRepo}:${path}`; b.seg=seg; A.nextSeq=b.seq+1;
+          b.state='written'; b.repoKey=X7.keyOf(A.ownRepo, A.writer, b.seq); b.seg=seg; A.nextSeq=b.seq+1;
           ev(`wrote ${A.writer}:${b.seq} (${b.ops.length} ops) to ${A.ownRepo} commit ${String(j.commit&&j.commit.sha).slice(0,7)}`,'ev-ok'); schedulePoll(300); break;
         }
         attempt++;
@@ -314,26 +428,78 @@ async function readTree(full, sha){
   const pre = A.logRoot.replace(/\/$/,'') + '/';
   const files = (t.tree||[]).filter(e=>e.type==='blob' && e.path.startsWith(pre)).sort((a,b)=>a.path<b.path?-1:1);
   let added=0;
+  const addSeg = (seg, w, seq, path) => {
+    const key = X7.keyOf(full, w, seq); if (A.confirmed.has(key)) return;
+    const e = X7.entry(full, seg, path); A.confirmed.set(key, e); added++;
+    const mine = A.ownRepo && full.toLowerCase()===A.ownRepo.toLowerCase() && w===A.writer;
+    if (mine){ if (seq>=A.nextSeq) A.nextSeq = seq+1; if (e.order[0]>A.lastTs) A.lastTs = e.order[0]; }
+    if (mine && !A.synced) seg.ops.forEach((_,i)=>A.seenEvents.add(`${full}:${w}:${seq}:${i}:`)); };
+  const fetchBytes = async f => b64dec((await getJSON(`/repos/${full}/git/blobs/${f.sha}`)).content);
+  const dec = async (bytes, f) => { try { return decodeSegment(bytes); } catch(e){
+      if (e.needCodec && await loadCodec()) { try { return decodeSegment(bytes); } catch(e2){ err(`${full}: cannot decode ${f.path}: ${e2.message}`); return null; } }
+      err(`${full}: cannot decode ${f.path}: ${e.message}`); return null; } };
+  if (A.useSnap){ const sn = (t.tree||[]).filter(e=>e.type==='blob' && /^snapshots\/[^/]+\/snap-\d+\.\w+$/.test(e.path)).sort((a,b)=>a.path<b.path?-1:1).pop();
+    if (sn && !A.snapSeen.has(full+':'+sn.sha)){ A.snapSeen.add(full+':'+sn.sha); const body = await dec(await fetchBytes(sn), sn);
+      if (body && body.snapshot===1 && Array.isArray(body.covered) && (!A.snap || body.covered.length > A.snap.covered.length)){ A.snap = body; A.snapCovered = new Set(body.covered); added++; ev(`using snapshot ${full}/${sn.path} (${body.covered.length} segments cached)`); } } }
   for (const f of files){
-    const key = `${full}:${f.path}`; if (A.confirmed.has(key)) continue;
-    const m = f.path.slice(pre.length).match(/^([^/]+)\/(\d+)\.\w+$/); if (!m) continue;
-    const w = m[1], seq = +m[2];
+    const pp = X7.parsePath(f.path.slice(pre.length)); if (!pp) continue;
+    if (pp.kind==='pack'){
+      let all=true; for (let q=pp.first;q<=pp.last;q++) if (!A.confirmed.has(X7.keyOf(full,pp.writer,q)) && !(A.snapCovered && A.snapCovered.has(X7.keyOf(full,pp.writer,q)))) { all=false; break; }
+      if (all) continue;
+      const body = await dec(await fetchBytes(f), f); if (!body) continue;
+      let segs; try { segs = X7.unpack(body, pp.writer, pp.first, pp.last); } catch(e){ err(`${full}: ${f.path} ignored (${e.message})`); continue; }
+      segs.forEach(sg => { if (!(A.snapCovered && A.snapCovered.has(X7.keyOf(full, pp.writer, sg.seq)))) addSeg(sg, pp.writer, sg.seq, f.path); });
+      continue; }
+    const w = pp.writer, seq = pp.seq, key = X7.keyOf(full, w, seq); if (A.confirmed.has(key)) continue;
+    if (A.snapCovered && A.snapCovered.has(key)){ const mine = A.ownRepo && full.toLowerCase()===A.ownRepo.toLowerCase() && w===A.writer; if (mine && seq>=A.nextSeq) A.nextSeq=seq+1; continue; }
     const own = A.pending.find(b=>b.repoKey===key);
     let seg = own && own.seg;
-    if (!seg){
-      const bl = await getJSON(`/repos/${full}/git/blobs/${f.sha}`);
-      try { seg = decodeSegment(b64dec(bl.content)); } catch(e){ err(`${full}: cannot decode ${f.path}: ${e.message}`); continue; }
-    }
-    if (!seg || seg.writer!==w || +seg.seq!==seq){ err(`${full}: ${f.path} ignored (writer/seq in file do not match its path)`); continue; }
-    const ts = Number.isFinite(+seg.ts) ? +seg.ts : (Date.parse(seg.createdAt)||0);
-    A.confirmed.set(key, {seg, order:[ts, w, seq, full], repo:full, path:f.path}); added++;
-    const mine = A.ownRepo && full.toLowerCase()===A.ownRepo.toLowerCase() && w===A.writer;
-    if (mine){ if (seq>=A.nextSeq) A.nextSeq = seq+1; if (ts>A.lastTs) A.lastTs = ts; }
-    if (mine && !A.synced) seg.ops.forEach((_,i)=>A.seenEvents.add(`${full}:${w}:${seq}:${i}`));
+    if (!seg){ seg = await dec(await fetchBytes(f), f); if (!seg) continue; }
+    if (!X7.checkSegment(seg, w, seq)){ err(`${full}: ${f.path} ignored (writer/seq in file do not match its path)`); continue; }
+    addSeg(seg, w, seq, f.path);
   }
   repoState(full).segs = [...A.confirmed.values()].filter(c=>c.repo===full).length;
   A.pending = A.pending.filter(b=>!(b.state==='written' && A.confirmed.has(b.repoKey)));
   if (added) rebuild();
+}
+
+/* ================= per-writer compaction + snapshots (doc 47 §5.5; off by default) =================
+   Compaction packs MY OWN contiguous single segments in MY OWN repo into log/<me>/pack-<first>-<last>.<ext> (256 KB soft per pack,
+   a segment over 1 MB is never packed, never split) with ONE Git Data commit that also deletes the singles; fast-forward only.
+   Readers treat a pack exactly like its singles (same keys). Nothing to pack = no request, no change (rule 14). */
+async function gh(method, path, body){ const r = await fetch(api(path), {method, headers:hdr({'Content-Type':'application/json'}), body:body?JSON.stringify(body):undefined}); trackRate(r); let j={}; try{ j=await r.json(); }catch{} if (r.status===401) on401('compaction'); return {r, j}; }
+async function compactOwn(o={}){
+  if (!A.token || !A.ownRepo || !A.synced) { err('Compaction needs sign-in and a synced own repo'); return {packs:0}; }
+  if (A.pending.some(b=>b.state!=='written')) { err('Compaction waits until the write queue is empty'); return {packs:0}; }
+  const pre = A.logRoot.replace(/\/$/,'') + '/';
+  const singles = sortedConfirmed().filter(c=>c.repo.toLowerCase()===A.ownRepo.toLowerCase() && c.seg.writer===A.writer && c.path && X7.parsePath(c.path.slice(pre.length))?.kind==='seg').sort((a,b)=>a.seg.seq-b.seg.seq);
+  const groups = X7.planPacks(singles.map(c=>c.seg), o); if (!groups.length){ ev('compaction: nothing to pack'); return {packs:0}; }
+  for (let attempt=0; attempt<3; attempt++){
+    const ref = await gh('GET', `/repos/${A.ownRepo}/git/ref/heads/main`); if (!ref.r.ok){ err(`compaction: ref read ${ref.r.status}`); return {packs:0}; }
+    const head = ref.j.object.sha, cm = await gh('GET', `/repos/${A.ownRepo}/git/commits/${head}`); if (!cm.r.ok){ err(`compaction: commit read ${cm.r.status}`); return {packs:0}; }
+    const entries = [];
+    for (const g of groups){ const bytes = X7.encodePack(X7.packBody(A.writer, g)); const sz = X7.sizeCheck(bytes);
+      const bl = await gh('POST', `/repos/${A.ownRepo}/git/blobs`, {content:b64enc(bytes), encoding:'base64'}); if (!bl.r.ok){ err(`compaction: blob ${bl.r.status}`); return {packs:0}; }
+      entries.push({path:`${pre}${A.writer}/pack-${pad(g[0].seq)}-${pad(g[g.length-1].seq)}${X7.segmentExt()}`, mode:'100644', type:'blob', sha:bl.j.sha});
+      for (const sg of g) { const c = A.confirmed.get(X7.keyOf(A.ownRepo, A.writer, sg.seq)); entries.push({path:c.path, mode:'100644', type:'blob', sha:null}); }
+      if (sz.soft) ev(`compaction: pack ${g[0].seq}-${g[g.length-1].seq} is ${sz.n} B (over the 256 KB soft limit: one oversize segment)`); }
+    const tr = await gh('POST', `/repos/${A.ownRepo}/git/trees`, {base_tree:cm.j.tree.sha, tree:entries}); if (!tr.r.ok){ err(`compaction: tree ${tr.r.status}`); return {packs:0}; }
+    const nc = await gh('POST', `/repos/${A.ownRepo}/git/commits`, {message:`atlas:demo writer:${A.writer} compact ${groups.map(g=>g[0].seq+'-'+g[g.length-1].seq).join(',')}`, tree:tr.j.sha, parents:[head]}); if (!nc.r.ok){ err(`compaction: commit ${nc.r.status}`); return {packs:0}; }
+    const up = await gh('PATCH', `/repos/${A.ownRepo}/git/refs/heads/main`, {sha:nc.j.sha, force:false});
+    if (up.r.ok){ groups.forEach(g=>g.forEach(sg=>{ const c=A.confirmed.get(X7.keyOf(A.ownRepo, A.writer, sg.seq)); c.path = entries.find(e=>e.sha && e.path.includes(`pack-${pad(g[0].seq)}-`)).path; }));
+      ev(`compacted ${groups.reduce((n,g)=>n+g.length,0)} own segments into ${groups.length} pack(s)`,'ev-ok'); schedulePoll(200); return {packs:groups.length, segments:groups.reduce((n,g)=>n+g.length,0)}; }
+    if (up.r.status===422){ ev('compaction: head moved (not a fast forward); retrying'); await sleep(500); continue; }
+    err(`compaction: ref update ${up.r.status}`); return {packs:0};
+  }
+  err('compaction: gave up after 3 non-fast-forward retries (nothing changed)'); return {packs:0};
+}
+async function publishSnapshot(){
+  if (!A.token || !A.ownRepo || !A.synced) { err('Snapshot needs sign-in and a synced own repo'); return null; }
+  const snap = X7.makeSnapshot(sortedConfirmed(), SEED, {writer:A.writer, codec:X7.codecMode(), schema:'exp7/1'});
+  if (A.snap) { err('Snapshot publishing from a snapshot-based view is not supported (would cover unread segments)'); return null; }
+  const n = (A.snapN = (A.snapN||0)+1), path = `snapshots/${A.writer}/snap-${pad(Date.now()%1e6*1000+n)}${X7.segmentExt()}`;
+  const {r, j} = await gh('PUT', `/repos/${A.ownRepo}/contents/${repoPath(path)}`, {message:`atlas:demo writer:${A.writer} snapshot ${snap.covered.length}`, content:b64enc(encodeSnapshot(snap))});
+  if (r.status===201){ ev(`published snapshot ${path} (${snap.covered.length} segments)`,'ev-ok'); return path; } err(`snapshot write ${r.status}: ${j.message||''}`); return null;
 }
 
 /* ================= sign-in: pasted fine-grained PAT + diagnostics ================= */
@@ -551,6 +717,8 @@ $('bCopyRepo').onclick=()=>{ if (A.ownRepo) copyText(A.ownRepo, 'repo name'); };
 $('bCopyLink').onclick=()=>copyText(shareLink(), 'share link');
 $('fRemember').onchange=()=>{ try{ if (!$('fRemember').checked) sessionStorage.removeItem(TOKEN_KEY); else if (A.token) sessionStorage.setItem(TOKEN_KEY, A.token); }catch{} };
 $('bCopyDiag').onclick=()=>copyText($('diag').innerText, 'diagnostics');
+$('bCompact').onclick=()=>compactOwn(); $('bSnap').onclick=()=>publishSnapshot();
+$('fCodec').onchange=()=>setCodec($('fCodec').checked);
 $('bDownload').onclick=()=>{
   const snap = {writer:A.writer, ownRepo:A.ownRepo, peers:A.peers, heads:Object.fromEntries([...A.repos].map(([k,v])=>[k,v.sha])), values:A.view.v, revisions:A.view.rev,
     segments:sortedConfirmed().map(c=>({repo:c.repo, path:c.path, order:c.order})), pending:A.pending.filter(b=>b.state!=='written').map(b=>({seq:b.seq,ops:b.ops}))};
@@ -561,6 +729,7 @@ $('fWriter').value = Q.get('writer')||''; $('fRepoName').value = Q.get('reponame
 $('fApi').value = Q.get('api')||'https://api.github.com'; $('fPoll').value = Q.get('poll')||10;
 $('fLogRoot').value = Q.get('logroot')||'log';
 { let p = Q.get('peers'); if (p==null) try { p = sessionStorage.getItem(PEERS_KEY); } catch {} $('fPeers').value = parsePeers(p).join('\n'); }
+A.useSnap = Q.get('usesnap')==='1';
 if (Q.get('anonmin')!=null) A.anonMinPerRepo = Math.max(0, +Q.get('anonmin')||0);
 restorePending(false);
 readSettings();
@@ -570,6 +739,7 @@ diag(`page loaded: origin "${location.origin}", protocol ${location.protocol}, s
   try { const t = sessionStorage.getItem(TOKEN_KEY); if (t){ $('fRemember').checked = true; await connect(t, true); } } catch {}
   let st=null; try { st = JSON.parse(sessionStorage.getItem(PENDING_KEY)||'null'); } catch {}
   if (st && st.kind==='newrepo' && A.token){ await checkOwnRepo(true); if (A.ownExists) clearPending(); }
+  if (Q.get('codec')==='bin'){ $('fCodec').checked=true; await setCodec(true); }
   if (Q.get('autostart')==='1') start();
 })();
 window.addEventListener('pageshow', e=>{ if (e.persisted) restorePending(true); });

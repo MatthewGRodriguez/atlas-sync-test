@@ -10,3 +10,5 @@
 node_modules/
 *.log
 tmp/
+# opt-in binary codec bundle (built locally, ~0.5 MB)
+clients/atlas_codec.bundle.js

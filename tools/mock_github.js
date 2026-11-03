@@ -6,6 +6,7 @@
 //   /__mock/config?fail403=N&failPut409=N&createForbidden=0|1&revoke=<token>|all|none
 //   /__mock/mkrepo?full=owner/name&init=0|1&private=0|1     (pre-create a repo; init=0 -> empty repo, no branch)
 //   /__mock/state                                            (all repos, commits, files; never tokens)
+// Git Data writes (compaction): POST /git/blobs, /git/trees (base_tree; sha:null deletes), /git/commits, PATCH /git/refs/heads/main (fast-forward only)
 // Synthetic Bearer tokens (fake, test-only). <login> = first dash-separated word, an optional -suffix is ignored:
 //   test-valid-<login>[-x]    -> login <login>; full write to repos OWNED by <login>; can POST /user/repos
 //   test-readonly-<login>[-x] -> login <login>; own repos permissions.push false, PUT 403
@@ -124,6 +125,28 @@ const server = http.createServer(async (req, res) => {
     repo.commits.push({ sha: csha, message: js.message, tree, files: [path] }); // on an empty repo this creates main
     return send(res, cur ? 200 : 201, { content: { path, sha: blob }, commit: { sha: csha, message: js.message } }, rl());
   }
+  // ---- Git Data API writes (compaction, doc 47 §5.5): blobs -> trees -> commits -> fast-forward ref update ----
+  if (/^\/git\/(blobs|trees|commits|refs\/heads\/main)$/.test(rest) && (req.method === 'POST' || req.method === 'PATCH')) {
+    if (who.anon) return send(res, 401, { message: 'Requires authentication' }, rl());
+    if (!isOwner || who.kind !== 'valid') return send(res, 403, { message: 'Resource not accessible by personal access token' }, rl());
+    spend(1); repo.pendingTrees = repo.pendingTrees || new Map(); repo.pendingCommits = repo.pendingCommits || new Map();
+    if (rest === '/git/blobs' && req.method === 'POST') { if (js.encoding !== 'base64' || typeof js.content !== 'string') return send(res, 422, { message: 'Invalid request' }, rl());
+      const b = sha1('blob ' + js.content); blobs.set(b, js.content); return send(res, 201, { sha: b }, rl()); }
+    if (rest === '/git/trees' && req.method === 'POST') {
+      const base = js.base_tree ? (repo.commits.find(c => c.sha === js.base_tree || c.treeSha === js.base_tree) || {}).tree || repo.pendingTrees.get(js.base_tree) : new Map();
+      if (!base) return send(res, 422, { message: 'Invalid base_tree' }, rl());
+      const t = new Map(base); for (const e of js.tree || []) { if (e.sha === null) t.delete(e.path); else { if (!blobs.has(e.sha)) return send(res, 422, { message: 'Invalid tree entry ' + e.path }, rl()); t.set(e.path, { sha: e.sha }); } }
+      const ts = sha1('tree' + JSON.stringify([...t]) + Math.random()); repo.pendingTrees.set(ts, t); return send(res, 201, { sha: ts }, rl()); }
+    if (rest === '/git/commits' && req.method === 'POST') { const t = repo.pendingTrees.get(js.tree); if (!t || !js.message) return send(res, 422, { message: 'Invalid tree or message' }, rl());
+      const cs = sha1('commit' + js.tree + Math.random()); repo.pendingCommits.set(cs, { sha: cs, message: js.message, tree: t, treeSha: js.tree, parents: js.parents || [] }); return send(res, 201, { sha: cs }, rl()); }
+    if (rest === '/git/refs/heads/main' && req.method === 'PATCH') { const c = repo.pendingCommits.get(js.sha); if (!c) return send(res, 422, { message: 'Object does not exist' }, rl());
+      if (!js.force && (!head() || c.parents[0] !== head().sha)) return send(res, 422, { message: 'Update is not a fast forward' }, rl());
+      const prev = head() ? head().tree : new Map(), files = [...new Set([...c.tree.keys(), ...prev.keys()])].filter(k => !prev.has(k) || !c.tree.has(k) || prev.get(k).sha !== c.tree.get(k).sha).sort();
+      repo.commits.push({ sha: c.sha, message: c.message, tree: c.tree, treeSha: c.treeSha, files }); repo.pendingCommits.delete(c.sha);
+      return send(res, 200, { ref: 'refs/heads/main', object: { sha: c.sha, type: 'commit' } }, rl()); }
+  }
+  if ((m = rest.match(/^\/git\/commits\/([0-9a-f]{40})$/)) && req.method === 'GET') { spend(1); const c = repo.commits.find(c => c.sha === m[1]); if (!c) return send(res, 404, NF, rl());
+    return send(res, 200, { sha: c.sha, message: c.message, tree: { sha: c.treeSha || c.sha } }, rl()); }
   send(res, 404, NF, rl());
 });
 server.listen(PORT, '127.0.0.1', () => console.log(`mock github (multi-account) on http://localhost:${PORT}`));

@@ -88,3 +88,10 @@ atlas/<atlasId>/
 8. Two real accounts (Matthew + a second tester) reading each other's public repos.
 4. 304 with Authorization really leaves `x-ratelimit-remaining` unchanged.
 5. Propagation delay between a write and `compare`/ref reads on api.github.com.
+
+## Exp7 sync core, codec, compaction, CLI (2026-11-02)
+- The core was extracted to `clients/exp7-sync-core.js` and inlined in the page. Node (CLI, tests) runs the same code, and page and Node replay
+  give byte-identical results (e2e_more_test).
+- Retroactive events: event dedupe keys include the previous owner, so a late segment that sorts in front is reported.
+- Size: a 5000-op segment is 391,865 B as JSON (over the 256 KB soft limit, allowed up to the 1 MB hard limit) and 9,721 B as atlas/1 binary.
+- The mock gained the Git Data API (blobs, trees with sha:null deletes, commits, and a fast-forward-only ref PATCH with 422).
