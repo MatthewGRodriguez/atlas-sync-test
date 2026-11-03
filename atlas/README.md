@@ -1,3 +1,3 @@
 # atlas/
 
-Placeholder. Will hold the Exp7 atlas: `snapshot.bin` (+ `snapshot.json` debug form) and append-only log segments under `log/`. **Synthetic data only.** See `../docs/rest-sync-notes.md`.
+Placeholder. Will hold the Exp7 atlas: `snapshot.bin` (binary only; legacy `.json` read-only) and append-only log segments under `log/`. **Synthetic data only.** See `../docs/rest-sync-notes.md`.

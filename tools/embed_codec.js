@@ -3,7 +3,7 @@
 // clients/client.html between the ATLAS-CODEC markers, so the single-file page writes binary by default with no server.
 // usage: node tools/embed_codec.js [bundle.js (default clients/atlas_codec.bundle.js)] [--check]   (--check: exit 1 if out of date)
 //        node tools/embed_codec.js --strip   (empty the markers: the form committed to the PUBLIC repo, since the codec is the Artist's code;
-//        the page then loads atlas_codec.bundle.js next to it, and falls back to JSON writes with a warning if that is missing)
+//        the page then loads atlas_codec.bundle.js next to it; if that is missing it cannot write: changes stay queued, 'codec required to write')
 // Node helper: require('./embed_codec.js').extract(htmlText) -> the embedded bundle source (used by atlas-cli.js and the tests).
 'use strict';
 const fs = require('fs'), path = require('path');

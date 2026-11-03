@@ -35,7 +35,7 @@ ol.steps{margin:6px 0;padding-left:20px}#authMsg{margin-top:6px}#authMsg.warn,.w
  <label>Poll every <input type="number" id="fPoll" min="2" max="300"> s</label><br>
  <label>API base <input type="url" id="fApi" size="28"></label>
  <label>Log root <input type="text" id="fLogRoot" size="10"></label>
- <label title="binary atlas/1 (.bin) is the default write format; tick to write JSON (.json) for debugging. Both are always readable."><input type="checkbox" id="fCodec"> Write JSON (debug)</label> <span id="codecWarn" class="ev-err" hidden></span>
+ <span id="codecState" class="mut" title="binary atlas/1 (.bin) is the only write format; legacy .json logs stay readable"></span> <button id="bRetryCodec" title="try loading the binary codec again">Retry codec</button> <span id="codecWarn" class="ev-err" hidden></span>
  <div style="margin-top:6px"><b>Peers</b> <span class="mut">(other writers' public log repos, <code>owner/repo</code>, comma or newline separated; read without a token)</span><br>
   <textarea id="fPeers" rows="2" cols="48" spellcheck="false" placeholder="alice/atlas-sync-log, bob/atlas-sync-log"></textarea></div>
  <div><button id="bStart" class="pri">Start sync</button> <button id="bStop">Stop</button> <span class="mut">URL params: ?writer=…&amp;peers=a/atlas-sync-log,b/atlas-sync-log&amp;poll=10&amp;reponame=…&amp;api=…</span></div>
@@ -89,30 +89,28 @@ const pad = n => String(n).padStart(6, '0');
 let isList = p => /\/notes$/.test(p);
 function setListRule(f) { isList = f; }
 
-/* ---------- codec (binary atlas/1 is the PRIMARY write format; JSON = interchange/debug, always readable) ----------
- * mode is the writer's preference ('bin' default). If the binary codec is not loaded, or its encode throws, that write falls back to
- * JSON (never fails, never drops ops) and onFallback(reason) is called so the UI/CLI can warn. Readers accept both, by magic bytes. */
+/* ---------- codec: binary atlas/1 is the ONLY write format (segments, packs, snapshots -> .bin; ADR 0113) ----------
+ * There is no JSON write path and no fallback: encode*() throws a CodecError (e.needCodec when the codec is not loaded,
+ * e.codecError when its encode fails) and the caller keeps the batch queued in its neutral op form until the codec is available.
+ * Readers decode binary (needs the codec) and, read-only, LEGACY plain-JSON segments/packs/snapshots from earlier test logs. */
 const MAGIC = [74, 82, 66];   // 'JRB' + 'A' (atlas) | 'W' (world, pre-ADR 0106) + version byte: the Artist codec container header
-const C = { mode: 'bin', impl: null, onFallback: null };
+const C = { impl: null };
 function setBinaryCodec(impl) { C.impl = impl || null; }
-function setCodecMode(m) { C.mode = m === 'json' ? 'json' : 'bin'; }
-function codecPref() { return C.mode; }
-function codecMode() { return C.mode === 'bin' && C.impl ? 'bin' : 'json'; }   // what the next write will (try to) use
-function onCodecFallback(f) { C.onFallback = f; }
+function codecReady() { return !!C.impl; }
+function codecMode() { return C.impl ? 'bin' : 'none'; }   // 'none' = cannot write (batches stay queued)
 function isBinary(b) { if (!b || b.length < 5) return false; for (let i = 0; i < 3; i++) if (b[i] !== MAGIC[i]) return false; return (b[3] === 65 || b[3] === 87) && b[4] >= 1 && b[4] < 16; }
-function encJSON(o, pretty) { return te.encode(pretty ? JSON.stringify(o, null, 1) : JSON.stringify(o)); }
-function fallback(why) { if (C.onFallback) try { C.onFallback(why); } catch (e) {} }
-function encode(o, pretty) {
-  if (C.mode !== 'bin') return encJSON(o, pretty);
-  if (!C.impl) { fallback('binary codec not loaded'); return encJSON(o, pretty); }
-  try { const b = C.impl.encode(te.encode(JSON.stringify(o))); if (!isBinary(b)) throw new Error('codec output has no atlas magic'); return b; }
-  catch (e) { fallback('binary encode failed: ' + e.message); return encJSON(o, pretty); } }
-function decode(bytes) {
-  if (isBinary(bytes)) { if (!C.impl) { const e = new Error('binary segment but binary codec not loaded'); e.needCodec = true; throw e; } return JSON.parse(td.decode(C.impl.decode(bytes))); }
+function codecErr(msg, k) { const e = new Error(msg); e[k] = true; e.codec = true; return e; }
+function encode(o) {
+  if (!C.impl) throw codecErr('binary codec not loaded: codec required to write', 'needCodec');
+  let b; try { b = C.impl.encode(te.encode(JSON.stringify(o))); } catch (e) { throw codecErr('binary encode failed: ' + e.message, 'codecError'); }
+  if (!isBinary(b)) throw codecErr('binary encode failed: codec output has no atlas magic', 'codecError');
+  return b; }
+function decode(bytes) {   // binary atlas/1, or a legacy .json file (read-only; never written any more)
+  if (isBinary(bytes)) { if (!C.impl) throw codecErr('binary segment but binary codec not loaded', 'needCodec'); return JSON.parse(td.decode(C.impl.decode(bytes))); }
   return JSON.parse(td.decode(bytes)); }
-const encodePack = o => encode(o, false), encodeSegment = seg => encode(seg, true), decodeSegment = decode, encodeSnapshot = s => encode(s, true), decodeSnapshot = decode;
-const extOf = bytes => isBinary(bytes) ? '.bin' : '.json';          // name a file from the bytes actually produced
-const segmentExt = () => codecMode() === 'bin' ? '.bin' : '.json';
+const encodePack = o => encode(o), encodeSegment = seg => encode(seg), decodeSegment = decode, encodeSnapshot = s => encode(s), decodeSnapshot = decode;
+const extOf = bytes => isBinary(bytes) ? '.bin' : '.json';          // classify a READ file (legacy .json); writes are always .bin
+const segmentExt = () => '.bin';
 
 /* ---------- op rules (doc 42 §3.7, ADR 0108; same as client.html v2) ---------- */
 function applyOp(S, op, writer, seq) {
@@ -214,7 +212,7 @@ function useSnapshot(snap, entries) {
   return { S: snap.S, covered: cov }; }
 
 const api = { MAX_OPS, SEG_SOFT, SEG_HARD, clone, pad, setListRule, isList: p => isList(p), applyOp, applyBatch, cmpOrder, entry, keyOf, replay, stateDigest,
-  setBinaryCodec, setCodecMode, codecMode, codecPref, onCodecFallback, extOf, isBinary, encodeSegment, decodeSegment, encodePack, encodeSnapshot, decodeSnapshot, segmentExt, parsePath, checkSegment, sizeCheck,
+  setBinaryCodec, codecReady, codecMode, extOf, isBinary, encodeSegment, decodeSegment, encodePack, encodeSnapshot, decodeSnapshot, segmentExt, parsePath, checkSegment, sizeCheck,
   planPacks, packBody, unpack, makeSnapshot, useSnapshot };
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.Exp7Sync = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
@@ -224,33 +222,39 @@ if (typeof module !== 'undefined' && module.exports) module.exports = api; else 
 /* ATLAS-CODEC-END */</script>
 <script>
 'use strict';
-/* ================= codec hooks (binary atlas/1 default, JSON debug/fallback) =================
-   All four take/return Uint8Array <-> JS objects. Default = binary atlas/1; JSON = debug form. */
+/* ================= codec hooks (binary atlas/1 is the ONLY write format; ADR 0113) ================= */
 const X7 = Exp7Sync;   // shared core (doc 47 P0): replay, validator, ordering, codec, packs, snapshots
 const encodeSegment = X7.encodeSegment, decodeSegment = X7.decodeSegment, encodeSnapshot = X7.encodeSnapshot, decodeSnapshot = X7.decodeSnapshot;
-/* Binary atlas/1 codec = the PRIMARY write format (segments, packs, snapshots -> .bin). JSON stays readable and is written only with
-   ?codec=json or the 'Write JSON (debug)' box. Codec source, in order: a copy embedded in this file between the ATLAS-CODEC markers
-   (tools/embed_codec.js; the public repo ships them EMPTY because the codec is the Artist's code), else atlas_codec.bundle.js next to
-   this page (or ?codecsrc=URL), loaded once at startup. ?nocodec=1 simulates a load failure. If no codec is available, or an encode
-   fails, that batch is written as JSON with a visible warning: changes never fail and nothing is dropped. */
-let codecLoading = null;
+/* Segments, packs and snapshots are written ONLY as binary atlas/1 (.bin). There is no JSON write path and no JSON fallback.
+   Codec source, in order: a copy embedded in this file between the ATLAS-CODEC markers (tools/embed_codec.js; the public repo ships
+   them EMPTY because the codec is the Artist's code), else atlas_codec.bundle.js next to this page (or ?codecsrc=URL).
+   Without a codec the page is in the 'codec required to write' state: it still reads legacy .json segments, changes are kept QUEUED
+   (op form, mirrored to sessionStorage) with a visible error, nothing is lost and nothing is written to GitHub in any other format;
+   the codec load is retried (every ?codecretry ms, default 10 s, or the Retry codec button) and the queue then drains as .bin.
+   ?nocodec=1 simulates a missing codec (test hook; noCodecOverride=false lifts it). */
+let codecLoading = null, codecRetryT = null, codecFailLogged = false, noCodecOverride = null;
+const noCodec = () => noCodecOverride ?? (Q.get('nocodec')==='1');
 function codecWarn(msg){ const w=$('codecWarn'); if (w){ w.hidden=!msg; w.textContent=msg?'⚠ '+msg:''; } }
-let codecReady = false;
-function initCodec(){ if (codecReady) return true;
-  if (Q.get('nocodec')==='1' || !window.AtlasCodec || !window.ATLAS_CODEC_WASM) return false;
-  try { X7.setBinaryCodec(AtlasCodec.create(ATLAS_CODEC_WASM)); return codecReady = true; } catch(e){ err('Binary codec: embedded codec failed: '+e.message); return false; } }
+function codecState(){ const el=$('codecState'); if (!el) return; const ok=X7.codecReady();
+  el.className = ok ? 'ok' : 'ev-err'; el.textContent = ok ? 'Binary atlas/1 codec loaded: writes go to .bin' : 'Codec required to write: no binary codec loaded (changes stay queued; legacy .json logs still readable)'; }
+function initCodec(){ if (X7.codecReady()) return true;
+  if (noCodec() || !window.AtlasCodec || !window.ATLAS_CODEC_WASM) return false;
+  try { X7.setBinaryCodec(AtlasCodec.create(ATLAS_CODEC_WASM)); codecState(); return true; } catch(e){ err('Binary codec: codec failed to initialise: '+e.message); return false; } }
 function loadCodec(){
-  if (Q.get('nocodec')!=='1' && window.AtlasCodec && initCodec()) return Promise.resolve(true);
+  if (initCodec()) return Promise.resolve(true);
   if (codecLoading) return codecLoading;
-  codecLoading = new Promise((res, rej)=>{ if (Q.get('nocodec')==='1') return rej(new Error('cannot load (?nocodec=1)')); const src=Q.get('codecsrc')||'atlas_codec.bundle.js';
-    const s=document.createElement('script'); s.src=src; s.onload=()=>res(); s.onerror=()=>rej(new Error('cannot load '+s.src)); document.head.append(s); })
-   .then(()=>{ X7.setBinaryCodec(AtlasCodec.create(ATLAS_CODEC_WASM)); codecReady = true; ev('binary atlas codec loaded'); return true; })
-   .catch(e=>{ err('Binary codec: '+e.message+' (writes fall back to JSON)'); return false; });   // not retried: one failure, no load loop
+  codecLoading = new Promise((res, rej)=>{ if (noCodec()) return rej(new Error('cannot load (?nocodec=1)')); if (window.AtlasCodec) return res();
+    const src=Q.get('codecsrc')||'atlas_codec.bundle.js';
+    const s=document.createElement('script'); s.src=src; s.onload=()=>res(); s.onerror=()=>{ s.remove(); rej(new Error('cannot load '+s.src)); }; document.head.append(s); })
+   .then(()=>{ if (!initCodec()) throw new Error('codec bundle loaded but did not initialise'); ev('binary atlas codec loaded'); codecFailLogged=false;
+     if (A.repos.size){ for (const st of A.repos.values()){ st.sha=null; st.etag=null; } if (A.running) schedulePoll(0); }   // re-read binary segments skipped while codec-less
+     codecWarn(''); return true; })
+   .catch(e=>{ if (!codecFailLogged) err('Binary codec: '+e.message+' (codec required to write; changes stay queued, nothing lost)'); codecFailLogged=true; return false; })
+   .then(ok=>{ codecLoading=null; codecState(); return ok; });
   return codecLoading; }
-X7.onCodecFallback(why=>{ const m=`Binary codec unavailable (${why}): this write was saved as JSON instead; nothing lost.`; A.codecFallbacks=(A.codecFallbacks||0)+1; codecWarn(m); err(m); });
-async function setCodec(json){ X7.setCodecMode(json?'json':'bin'); if (!json) await loadCodec();
-  codecWarn(X7.codecPref()==='bin' && X7.codecMode()!=='bin' ? 'Binary codec unavailable: writes fall back to JSON (nothing lost).' : '');
-  ev(`segments written as ${X7.codecMode()==='bin'?'binary atlas/1 (.bin)':'JSON (.json)'+(json?' (debug)':' (fallback)')}`); }
+function scheduleCodecRetry(){ if (codecRetryT) return; codecRetryT = setTimeout(async()=>{ codecRetryT=null;
+  if (await loadCodec()) pump(); else if (A.pending.some(b=>b.state==='queued')) scheduleCodecRetry(); }, +(Q.get('codecretry')||10000)); }
+async function retryCodec(){ const ok = await loadCodec(); if (ok) pump(); return ok; }
 /* ================= helpers ================= */
 const $ = id => document.getElementById(id);
 const Q = new URLSearchParams(location.search);
@@ -287,7 +291,7 @@ const isList = X7.isList;
 const applyOp = X7.applyOp, applyBatch = X7.applyBatch;
 
 /* ================= app state =================
-   Multi-repo design: every writer writes ONLY to its own public repo <login>/<repoName> (log/<writer>/<seq>.json)
+   Multi-repo design: every writer writes ONLY to its own public repo <login>/<repoName> (log/<writer>/<seq>.bin)
    and reads every repo in [own, ...peers] (anonymously if not signed in). There is no shared commit order, so
    segments are merged in a deterministic order: [ts (writer clock, ms), writer id, seq, repo]. Last write wins. */
 const A = {
@@ -338,7 +342,7 @@ function propose(ops){
   const S = clone(A.view); const r = applyBatch(S, {writer:A.writer, seq:'local', ops});
   r.results.forEach((res,i)=>{ if (res.status!=='applied') ev(`local: ${ops[i].op} ${ops[i].path} -> ${res.status}${res.reason?' ('+res.reason+')':''}`, res.status==='rejected'?'ev-err':''); });
   A.pending.push({id:Math.random().toString(36).slice(2), ops, state:'queued'});
-  rebuild(); pump();
+  saveQueue(); rebuild(); pump();
 }
 function hdr(extra={}){ const h={Accept:'application/vnd.github+json'}; if (A.token) h.Authorization='Bearer '+A.token; return Object.assign(h, extra); }
 function api(path){ return A.api.replace(/\/$/,'') + path; }
@@ -359,9 +363,15 @@ async function pump(){
         const wait = A.lastWriteAt + 1000 - Date.now(); if (wait>0) await sleep(wait);
         if (b.seq == null) b.seq = A.nextSeq;
         if (b.ts == null){ b.ts = Math.max(Date.now(), A.lastTs+1); A.lastTs = b.ts; }
-        if (X7.codecPref()==='bin' && codecLoading) await codecLoading;   // resolves true/false, never throws: a failure means JSON fallback
+        if (!X7.codecReady()) await loadCodec();   // resolves true/false, never throws
         const seg = {v:2, atlas:'demo', writer:A.writer, seq:b.seq, ts:b.ts, createdAt:new Date(b.ts).toISOString(), ops:b.ops};
-        const bytes = encodeSegment(seg), path = `${A.logRoot}/${A.writer}/${pad(b.seq)}${X7.extOf(bytes)}`;   // .bin, or .json on fallback
+        let bytes;
+        try { bytes = encodeSegment(seg); }
+        catch(e){   // no codec / encode failure: NOTHING is written; the batch stays queued in op form and is retried as .bin
+          b.state='queued'; b.err=e.message; const m=`Codec required to write: ${e.message}. ${A.pending.filter(x=>x.state==='queued').length} batch(es) stay queued (nothing lost, nothing written); retrying when the codec is available.`;
+          codecWarn(m); if (A.lastCodecErr!==e.message) err(m); A.lastCodecErr=e.message; A.codecBlocked=(A.codecBlocked||0)+1; codecState(); saveQueue(); renderQueue(); scheduleCodecRetry(); return; }
+        if (b.err){ delete b.err; } if (A.lastCodecErr){ A.lastCodecErr=null; codecWarn(''); }
+        const path = `${A.logRoot}/${A.writer}/${pad(b.seq)}.bin`;   // always binary atlas/1
         b.state='writing'; renderQueue();
         let r, j={};
         try {
@@ -372,7 +382,7 @@ async function pump(){
           trackRate(r); try { j = await r.json(); } catch {}
         } catch(e){ r = null; err(`Write failed (network/CORS): ${e.message}`); }
         if (r && (r.status===201 || r.status===200)){
-          b.state='written'; b.repoKey=X7.keyOf(A.ownRepo, A.writer, b.seq); b.seg=seg; A.nextSeq=b.seq+1;
+          b.state='written'; saveQueue(); b.repoKey=X7.keyOf(A.ownRepo, A.writer, b.seq); b.seg=seg; A.nextSeq=b.seq+1;
           ev(`wrote ${A.writer}:${b.seq} (${b.ops.length} ops) to ${A.ownRepo} commit ${String(j.commit&&j.commit.sha).slice(0,7)}`,'ev-ok'); schedulePoll(300); break;
         }
         attempt++;
@@ -493,19 +503,19 @@ async function readTree(full, sha){
    Readers treat a pack exactly like its singles (same keys). Nothing to pack = no request, no change (rule 14). */
 async function gh(method, path, body){ const r = await fetch(api(path), {method, headers:hdr({'Content-Type':'application/json'}), body:body?JSON.stringify(body):undefined}); trackRate(r); let j={}; try{ j=await r.json(); }catch{} if (r.status===401) on401('compaction'); return {r, j}; }
 async function compactOwn(o={}){
-  if (X7.codecPref()==='bin' && codecLoading) await codecLoading;
+  if (!X7.codecReady() && !await loadCodec()) { err('Compaction: codec required to write (packs are binary only); nothing changed'); return {packs:0}; }
   if (!A.token || !A.ownRepo || !A.synced) { err('Compaction needs sign-in and a synced own repo'); return {packs:0}; }
   if (A.pending.some(b=>b.state!=='written')) { err('Compaction waits until the write queue is empty'); return {packs:0}; }
   const pre = A.logRoot.replace(/\/$/,'') + '/';
   const singles = sortedConfirmed().filter(c=>c.repo.toLowerCase()===A.ownRepo.toLowerCase() && c.seg.writer===A.writer && c.path && X7.parsePath(c.path.slice(pre.length))?.kind==='seg').sort((a,b)=>a.seg.seq-b.seg.seq);
-  const groups = X7.planPacks(singles.map(c=>c.seg), o); if (!groups.length){ ev('compaction: nothing to pack'); return {packs:0}; }
+  let groups; try { groups = X7.planPacks(singles.map(c=>c.seg), o); } catch(e){ err('Compaction: '+e.message+'; nothing changed'); return {packs:0}; } if (!groups.length){ ev('compaction: nothing to pack'); return {packs:0}; }
   for (let attempt=0; attempt<3; attempt++){
     const ref = await gh('GET', `/repos/${A.ownRepo}/git/ref/heads/main`); if (!ref.r.ok){ err(`compaction: ref read ${ref.r.status}`); return {packs:0}; }
     const head = ref.j.object.sha, cm = await gh('GET', `/repos/${A.ownRepo}/git/commits/${head}`); if (!cm.r.ok){ err(`compaction: commit read ${cm.r.status}`); return {packs:0}; }
     const entries = [];
-    for (const g of groups){ const bytes = X7.encodePack(X7.packBody(A.writer, g)); const sz = X7.sizeCheck(bytes);
+    for (const g of groups){ let bytes; try { bytes = X7.encodePack(X7.packBody(A.writer, g)); } catch(e){ err('Compaction: '+e.message+'; nothing changed'); return {packs:0}; } const sz = X7.sizeCheck(bytes);
       const bl = await gh('POST', `/repos/${A.ownRepo}/git/blobs`, {content:b64enc(bytes), encoding:'base64'}); if (!bl.r.ok){ err(`compaction: blob ${bl.r.status}`); return {packs:0}; }
-      entries.push({path:`${pre}${A.writer}/pack-${pad(g[0].seq)}-${pad(g[g.length-1].seq)}${X7.extOf(bytes)}`, mode:'100644', type:'blob', sha:bl.j.sha});
+      entries.push({path:`${pre}${A.writer}/pack-${pad(g[0].seq)}-${pad(g[g.length-1].seq)}.bin`, mode:'100644', type:'blob', sha:bl.j.sha});
       for (const sg of g) { const c = A.confirmed.get(X7.keyOf(A.ownRepo, A.writer, sg.seq)); entries.push({path:c.path, mode:'100644', type:'blob', sha:null}); }
       if (sz.soft) ev(`compaction: pack ${g[0].seq}-${g[g.length-1].seq} is ${sz.n} B (over the 256 KB soft limit: one oversize segment)`); }
     const tr = await gh('POST', `/repos/${A.ownRepo}/git/trees`, {base_tree:cm.j.tree.sha, tree:entries}); if (!tr.r.ok){ err(`compaction: tree ${tr.r.status}`); return {packs:0}; }
@@ -519,11 +529,12 @@ async function compactOwn(o={}){
   err('compaction: gave up after 3 non-fast-forward retries (nothing changed)'); return {packs:0};
 }
 async function publishSnapshot(){
-  if (X7.codecPref()==='bin' && codecLoading) await codecLoading;
+  if (!X7.codecReady() && !await loadCodec()) { err('Snapshot: codec required to write (snapshots are binary only); nothing written'); return null; }
   if (!A.token || !A.ownRepo || !A.synced) { err('Snapshot needs sign-in and a synced own repo'); return null; }
   const snap = X7.makeSnapshot(sortedConfirmed(), SEED, {writer:A.writer, codec:X7.codecMode(), schema:'exp7/1'});
   if (A.snap) { err('Snapshot publishing from a snapshot-based view is not supported (would cover unread segments)'); return null; }
-  const sb = encodeSnapshot(snap), n = (A.snapN = (A.snapN||0)+1), path = `snapshots/${A.writer}/snap-${pad(Date.now()%1e6*1000+n)}${X7.extOf(sb)}`;
+  let sb; try { sb = encodeSnapshot(snap); } catch(e){ err('Snapshot: '+e.message+'; nothing written'); return null; }
+  const n = (A.snapN = (A.snapN||0)+1), path = `snapshots/${A.writer}/snap-${pad(Date.now()%1e6*1000+n)}.bin`;
   const {r, j} = await gh('PUT', `/repos/${A.ownRepo}/contents/${repoPath(path)}`, {message:`atlas:demo writer:${A.writer} snapshot ${snap.covered.length}`, content:b64enc(sb)});
   if (r.status===201){ ev(`published snapshot ${path} (${snap.covered.length} segments)`,'ev-ok'); return path; } err(`snapshot write ${r.status}: ${j.message||''}`); return null;
 }
@@ -551,6 +562,14 @@ function openNewRepoPage(){
   diag('navigating this tab to github.com/new prefilled (name, public, description); use Back to return');
   location.assign(newRepoUrl());
 }
+/* Unwritten batches are mirrored to sessionStorage in their neutral op form (never as an encoded file, never the token), so a
+   codec outage or a reload loses nothing; they are re-queued on load and written as .bin once the codec is available. */
+const QUEUE_KEY = 'atlasSyncQueue';
+function saveQueue(){ try { const q=A.pending.filter(b=>b.state!=='written').map(b=>({id:b.id, ops:b.ops, seq:b.seq??null, ts:b.ts??null}));
+  if (q.length) sessionStorage.setItem(QUEUE_KEY, JSON.stringify(q)); else sessionStorage.removeItem(QUEUE_KEY); } catch {} }
+function restoreQueue(){ let q=null; try { q=JSON.parse(sessionStorage.getItem(QUEUE_KEY)||'null'); } catch {}
+  if (!Array.isArray(q) || !q.length || A.pending.length) return 0;
+  q.forEach(b=>A.pending.push({id:b.id, ops:b.ops, state:'queued', seq:b.seq??undefined, ts:b.ts??undefined})); ev(`restored ${q.length} queued batch(es) from this tab (not yet written)`); return q.length; }
 function restorePending(fromBfcache){
   let st=null; try { st = JSON.parse(sessionStorage.getItem(PENDING_KEY)||'null'); } catch {}
   if (!st) return false;
@@ -744,7 +763,7 @@ $('bCopyLink').onclick=()=>copyText(shareLink(), 'share link');
 $('fRemember').onchange=()=>{ try{ if (!$('fRemember').checked) sessionStorage.removeItem(TOKEN_KEY); else if (A.token) sessionStorage.setItem(TOKEN_KEY, A.token); }catch{} };
 $('bCopyDiag').onclick=()=>copyText($('diag').innerText, 'diagnostics');
 $('bCompact').onclick=()=>compactOwn(); $('bSnap').onclick=()=>publishSnapshot();
-$('fCodec').onchange=()=>setCodec($('fCodec').checked);
+$('bRetryCodec').onclick=()=>retryCodec();
 $('bDownload').onclick=()=>{
   const snap = {writer:A.writer, ownRepo:A.ownRepo, peers:A.peers, heads:Object.fromEntries([...A.repos].map(([k,v])=>[k,v.sha])), values:A.view.v, revisions:A.view.rev,
     segments:sortedConfirmed().map(c=>({repo:c.repo, path:c.path, order:c.order})), pending:A.pending.filter(b=>b.state!=='written').map(b=>({seq:b.seq,ops:b.ops}))};
@@ -758,8 +777,8 @@ $('fLogRoot').value = Q.get('logroot')||'log';
 A.useSnap = Q.get('usesnap')==='1';
 if (Q.get('anonmin')!=null) A.anonMinPerRepo = Math.max(0, +Q.get('anonmin')||0);
 restorePending(false);
-if (Q.get('codec')==='json') $('fCodec').checked=true;
-X7.setCodecMode($('fCodec').checked?'json':'bin'); if (!initCodec() && X7.codecPref()==='bin') loadCodec().then(()=>setCodec(false));
+restoreQueue();
+codecState(); if (!initCodec()) loadCodec().then(ok=>{ if (!ok) codecWarn('Codec required to write: no binary codec loaded. Reading works (binary needs the codec; legacy .json is readable); changes stay queued, nothing lost.'); else pump(); });
 readSettings();
 A.view = {v:clone(SEED), rev:{}}; render();
 diag(`page loaded: origin "${location.origin}", protocol ${location.protocol}, secure context ${window.isSecureContext}`);

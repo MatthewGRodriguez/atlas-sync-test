@@ -10,30 +10,28 @@ const pad = n => String(n).padStart(6, '0');
 let isList = p => /\/notes$/.test(p);
 function setListRule(f) { isList = f; }
 
-/* ---------- codec (binary atlas/1 is the PRIMARY write format; JSON = interchange/debug, always readable) ----------
- * mode is the writer's preference ('bin' default). If the binary codec is not loaded, or its encode throws, that write falls back to
- * JSON (never fails, never drops ops) and onFallback(reason) is called so the UI/CLI can warn. Readers accept both, by magic bytes. */
+/* ---------- codec: binary atlas/1 is the ONLY write format (segments, packs, snapshots -> .bin; ADR 0113) ----------
+ * There is no JSON write path and no fallback: encode*() throws a CodecError (e.needCodec when the codec is not loaded,
+ * e.codecError when its encode fails) and the caller keeps the batch queued in its neutral op form until the codec is available.
+ * Readers decode binary (needs the codec) and, read-only, LEGACY plain-JSON segments/packs/snapshots from earlier test logs. */
 const MAGIC = [74, 82, 66];   // 'JRB' + 'A' (atlas) | 'W' (world, pre-ADR 0106) + version byte: the Artist codec container header
-const C = { mode: 'bin', impl: null, onFallback: null };
+const C = { impl: null };
 function setBinaryCodec(impl) { C.impl = impl || null; }
-function setCodecMode(m) { C.mode = m === 'json' ? 'json' : 'bin'; }
-function codecPref() { return C.mode; }
-function codecMode() { return C.mode === 'bin' && C.impl ? 'bin' : 'json'; }   // what the next write will (try to) use
-function onCodecFallback(f) { C.onFallback = f; }
+function codecReady() { return !!C.impl; }
+function codecMode() { return C.impl ? 'bin' : 'none'; }   // 'none' = cannot write (batches stay queued)
 function isBinary(b) { if (!b || b.length < 5) return false; for (let i = 0; i < 3; i++) if (b[i] !== MAGIC[i]) return false; return (b[3] === 65 || b[3] === 87) && b[4] >= 1 && b[4] < 16; }
-function encJSON(o, pretty) { return te.encode(pretty ? JSON.stringify(o, null, 1) : JSON.stringify(o)); }
-function fallback(why) { if (C.onFallback) try { C.onFallback(why); } catch (e) {} }
-function encode(o, pretty) {
-  if (C.mode !== 'bin') return encJSON(o, pretty);
-  if (!C.impl) { fallback('binary codec not loaded'); return encJSON(o, pretty); }
-  try { const b = C.impl.encode(te.encode(JSON.stringify(o))); if (!isBinary(b)) throw new Error('codec output has no atlas magic'); return b; }
-  catch (e) { fallback('binary encode failed: ' + e.message); return encJSON(o, pretty); } }
-function decode(bytes) {
-  if (isBinary(bytes)) { if (!C.impl) { const e = new Error('binary segment but binary codec not loaded'); e.needCodec = true; throw e; } return JSON.parse(td.decode(C.impl.decode(bytes))); }
+function codecErr(msg, k) { const e = new Error(msg); e[k] = true; e.codec = true; return e; }
+function encode(o) {
+  if (!C.impl) throw codecErr('binary codec not loaded: codec required to write', 'needCodec');
+  let b; try { b = C.impl.encode(te.encode(JSON.stringify(o))); } catch (e) { throw codecErr('binary encode failed: ' + e.message, 'codecError'); }
+  if (!isBinary(b)) throw codecErr('binary encode failed: codec output has no atlas magic', 'codecError');
+  return b; }
+function decode(bytes) {   // binary atlas/1, or a legacy .json file (read-only; never written any more)
+  if (isBinary(bytes)) { if (!C.impl) throw codecErr('binary segment but binary codec not loaded', 'needCodec'); return JSON.parse(td.decode(C.impl.decode(bytes))); }
   return JSON.parse(td.decode(bytes)); }
-const encodePack = o => encode(o, false), encodeSegment = seg => encode(seg, true), decodeSegment = decode, encodeSnapshot = s => encode(s, true), decodeSnapshot = decode;
-const extOf = bytes => isBinary(bytes) ? '.bin' : '.json';          // name a file from the bytes actually produced
-const segmentExt = () => codecMode() === 'bin' ? '.bin' : '.json';
+const encodePack = o => encode(o), encodeSegment = seg => encode(seg), decodeSegment = decode, encodeSnapshot = s => encode(s), decodeSnapshot = decode;
+const extOf = bytes => isBinary(bytes) ? '.bin' : '.json';          // classify a READ file (legacy .json); writes are always .bin
+const segmentExt = () => '.bin';
 
 /* ---------- op rules (doc 42 §3.7, ADR 0108; same as client.html v2) ---------- */
 function applyOp(S, op, writer, seq) {
@@ -135,7 +133,7 @@ function useSnapshot(snap, entries) {
   return { S: snap.S, covered: cov }; }
 
 const api = { MAX_OPS, SEG_SOFT, SEG_HARD, clone, pad, setListRule, isList: p => isList(p), applyOp, applyBatch, cmpOrder, entry, keyOf, replay, stateDigest,
-  setBinaryCodec, setCodecMode, codecMode, codecPref, onCodecFallback, extOf, isBinary, encodeSegment, decodeSegment, encodePack, encodeSnapshot, decodeSnapshot, segmentExt, parsePath, checkSegment, sizeCheck,
+  setBinaryCodec, codecReady, codecMode, extOf, isBinary, encodeSegment, decodeSegment, encodePack, encodeSnapshot, decodeSnapshot, segmentExt, parsePath, checkSegment, sizeCheck,
   planPacks, packBody, unpack, makeSnapshot, useSnapshot };
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.Exp7Sync = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

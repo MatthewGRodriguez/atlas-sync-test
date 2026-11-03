@@ -7,6 +7,13 @@ let n = 0, bad = 0; const ok = (c, name, info) => { n++; if (!c) bad++; console.
 const SEED = { 'joys/i1/value': 3, 'joys/i3/value': 4, 'items/i1/notes': [] };
 const seg = (writer, seq, ts, ops) => ({ v: 2, atlas: 'demo', writer, seq, ts, ops });
 const E = (repo, s) => X.entry(repo, s, `log/${s.writer}/${X.pad(s.seq)}.json`);
+const te = new TextEncoder(), legacyJSON = o => te.encode(JSON.stringify(o, null, 1));   // how pre-ADR-0113 tests wrote .json (read-only now)
+const CODEC = (() => { const bp = (process.argv.indexOf('--codec') > 0 && process.argv[process.argv.indexOf('--codec') + 1]) || null;
+  const lb = path.join(__dirname, '../clients/atlas_codec.bundle.js');
+  const src = bp ? fs.readFileSync(bp, 'utf8') : (require('./embed_codec.js').extract(fs.readFileSync(path.join(__dirname, '../clients/client.html'), 'utf8')) || (fs.existsSync(lb) ? fs.readFileSync(lb, 'utf8') : ''));
+  if (!src) return null; const ctx = { window: {}, TextEncoder, TextDecoder, WebAssembly, btoa, atob, Uint8Array, console }; vm.createContext(ctx); vm.runInContext(src, ctx);
+  return ctx.window.AtlasCodec.create(ctx.window.ATLAS_CODEC_WASM); })();
+if (!CODEC) console.log('SKIP binary codec checks (no codec embedded and no clients/atlas_codec.bundle.js; tools/build_codec_bundle.sh)');
 // ordering + LWW + conflict reports
 { const a = seg('alice', 1, 1000, [{ op: 'set', path: 'joys/i3/value', value: 7 }]), b = seg('bob', 1, 1000, [{ op: 'set', path: 'joys/i3/value', value: 9 }]);
   const r1 = X.replay([E('alice/r', a), E('bob/r', b)], SEED), r2 = X.replay([E('bob/r', b), E('alice/r', a)], SEED);
@@ -26,8 +33,9 @@ const E = (repo, s) => X.entry(repo, s, `log/${s.writer}/${X.pad(s.seq)}.json`);
   const big = X.applyBatch({ v: {}, rev: {} }, seg('a', 3, 4, Array.from({ length: 5001 }, () => ({ op: 'set', path: 'p', value: 1 }))));
   const ok5k = X.applyBatch({ v: {}, rev: {} }, seg('a', 3, 4, Array.from({ length: 5000 }, (_, i) => ({ op: 'set', path: 'p' + i, value: i }))));
   ok(big.rejected === 'batch too large' && ok5k.results.length === 5000 && !ok5k.rejected, '5000 ops ok, 5001 rejected'); }
-// packs: soft 256 KB, hard 1 MB, contiguous, never split
-{ const mk = (seq, bytes) => seg('alice', seq, seq, [{ op: 'set', path: 'items/i1/name', value: 'x'.repeat(bytes) }]);
+// packs: soft 256 KB, hard 1 MB, contiguous, never split (sized in binary: needs the codec)
+if (CODEC) { X.setBinaryCodec(CODEC); const rnd = n => require('crypto').randomBytes(n).toString('base64').slice(0, n);   // incompressible, so binary size ~ bytes
+  const mk = (seq, bytes) => seg('alice', seq, seq, [{ op: 'set', path: 'items/i1/name', value: rnd(bytes) }]);
   const segs = []; for (let i = 1; i <= 40; i++) segs.push(mk(i, 20000));
   const g = X.planPacks(segs); const sizes = g.map(x => X.encodePack(X.packBody('alice', x)).length);
   ok(g.length >= 3 && sizes.every(s => s <= X.SEG_SOFT), '40 x 20 KB segments -> packs each <= 256 KB', sizes);
@@ -36,8 +44,8 @@ const E = (repo, s) => X.entry(repo, s, `log/${s.writer}/${X.pad(s.seq)}.json`);
   ok(!gh.flat().some(s => s.seq === 2) && gh.length === 1 && gh[0][0].seq === 3, 'a >1 MB segment is never packed or split; packs do not span it', gh.map(x => x.map(s => s.seq)));
   const gap = X.planPacks([mk(1, 10), mk(2, 10), mk(5, 10), mk(6, 10)]); ok(gap.length === 2, 'packs never span a seq gap');
   ok(X.planPacks([mk(1, 10)]).length === 0, 'one segment: nothing to pack (no change)');
-  const body = X.packBody('alice', segs.slice(0, 3)), back = X.unpack(JSON.parse(new TextDecoder().decode(X.encodePack(body))), 'alice', 1, 3);
-  ok(JSON.stringify(back) === JSON.stringify(segs.slice(0, 3)), 'pack round-trip = the same segments');
+  const body = X.packBody('alice', segs.slice(0, 3)), back = X.unpack(X.decodeSegment(X.encodePack(body)), 'alice', 1, 3);
+  ok(X.isBinary(X.encodePack(body)) && JSON.stringify(back) === JSON.stringify(segs.slice(0, 3)), 'pack is written binary (JRB) and round-trips to the same segments');
   let thrown = 0; try { X.unpack(body, 'bob', 1, 3); } catch { thrown++; } try { X.unpack(body, 'alice', 1, 4); } catch { thrown++; } ok(thrown === 2, 'pack with wrong writer/range is refused');
   const r1 = X.replay(segs.map(s => E('alice/r', s)), SEED), r2 = X.replay(back.concat(segs.slice(3)).map(s => X.entry('alice/r', s, 'log/alice/pack-000001-000003.json')), SEED);
   ok(X.stateDigest(r1.S) === X.stateDigest(r2.S), 'replay with pack = replay with singles'); }
@@ -49,32 +57,30 @@ const E = (repo, s) => X.entry(repo, s, `log/${s.writer}/${X.pad(s.seq)}.json`);
   const late = E('carol/r', seg('carol', 1, 1005, [{ op: 'set', path: 'joys/i3/value', value: 99 }]));
   ok(X.useSnapshot(snap, later.concat([late])) === null, 'a late segment sorting inside the snapshot invalidates it (rebuild)');
   ok(X.useSnapshot({ snapshot: 2 }, later) === null, 'unknown snapshot version is not trusted'); }
-// binary codec = primary write format; JSON fallback never loses a write
-{ const warns = []; X.onCodecFallback(w => warns.push(w)); const s0 = seg('alice', 1, 1, [{ op: 'set', path: 'joys/i1/value', value: 5 }]);
-  const j0 = X.encodeSegment(s0);
-  ok(X.codecPref() === 'bin' && !X.isBinary(j0) && X.extOf(j0) === '.json' && warns.length === 1 && JSON.stringify(X.decodeSegment(j0)) === JSON.stringify(s0),
-    'default pref is binary; with no codec loaded the write falls back to JSON with a warning (nothing lost)', warns); }
-{ const bp = (process.argv.indexOf('--codec') > 0 && process.argv[process.argv.indexOf('--codec') + 1]) || null;
-  const lb = path.join(__dirname, '../clients/atlas_codec.bundle.js');
-  const src = bp ? fs.readFileSync(bp, 'utf8') : (require('./embed_codec.js').extract(fs.readFileSync(path.join(__dirname, '../clients/client.html'), 'utf8')) || (fs.existsSync(lb) ? fs.readFileSync(lb, 'utf8') : ''));
-  if (!src) console.log('SKIP binary codec checks (no codec embedded and no clients/atlas_codec.bundle.js; tools/build_codec_bundle.sh)');
-  else { const ctx = { window: {}, TextEncoder, TextDecoder, WebAssembly, btoa, atob, Uint8Array, console }; vm.createContext(ctx); vm.runInContext(src, ctx);
-    const codec = ctx.window.AtlasCodec.create(ctx.window.ATLAS_CODEC_WASM); X.setBinaryCodec(codec); X.setCodecMode('bin');
+// binary atlas/1 is the ONLY write format: no codec / encode failure throws (caller keeps the batch queued), never JSON
+{ X.setBinaryCodec(null); const s0 = seg('alice', 1, 1, [{ op: 'set', path: 'joys/i1/value', value: 5 }]); let e0 = null, out = null;
+  try { out = X.encodeSegment(s0); } catch (e) { e0 = e; }
+  ok(out === null && e0 && e0.needCodec && /codec required to write/.test(e0.message) && X.codecMode() === 'none' && !X.codecReady() && X.segmentExt() === '.bin',
+    'no codec: encodeSegment throws needCodec ("codec required to write"), returns no bytes (no JSON fallback)', e0 && e0.message);
+  let p0 = 0; for (const f of [() => X.encodePack(X.packBody('alice', [s0])), () => X.encodeSnapshot({ snapshot: 1 })]) try { f(); } catch (e) { if (e.needCodec) p0++; }
+  ok(p0 === 2, 'no codec: packs and snapshots cannot be written either');
+  ok(['setCodecMode', 'codecPref', 'onCodecFallback'].every(k => X[k] === undefined), 'JSON write API removed from the core (setCodecMode/codecPref/onCodecFallback)');
+  const lj = legacyJSON(s0); ok(!X.isBinary(lj) && X.extOf(lj) === '.json' && JSON.stringify(X.decodeSegment(lj)) === JSON.stringify(s0), 'legacy .json segment still decodes without a codec (read-only)'); }
+if (CODEC) { const codec = CODEC; X.setBinaryCodec(codec);
     const s = seg('alice', 7, 123, [{ op: 'set', path: 'joys/i3/value', value: 4 }, { op: 'add', path: 'items/i1/notes', value: 'é ✓ "q"' }]);
-    const b = X.encodeSegment(s); ok(X.isBinary(b) && X.segmentExt() === '.bin', 'binary mode writes a JRB container, .bin', b.length);
+    const b = X.encodeSegment(s); ok(X.isBinary(b) && X.segmentExt() === '.bin' && X.codecMode() === 'bin', 'with the codec every write is a JRB container, .bin', b.length);
     ok(JSON.stringify(X.decodeSegment(b)) === JSON.stringify(s), 'binary segment round-trips to the same JSON');
-    const many = seg('alice', 8, 124, Array.from({ length: 5000 }, (_, i) => ({ op: 'set', path: 'items/i' + (i % 50) + '/values/v' + i, value: i })));
-    const bj = new TextEncoder().encode(JSON.stringify(many, null, 1)).length, bb = X.encodeSegment(many).length; console.log('     5000-op segment: JSON ' + bj + ' B, atlas/1 ' + bb + ' B');
+    const many = seg('alice', 8, 124, Array.from({ length: 5000 }, (_, i) => ({ op: 'set', path: 'joys/i' + i + '/value', value: i })));
+    const bj = legacyJSON(many).length, bb = X.encodeSegment(many).length; console.log('     5000-op segment: JSON (comparison only) ' + bj + ' B, atlas/1 ' + bb + ' B');
     ok(JSON.stringify(X.decodeSegment(X.encodeSegment(many))) === JSON.stringify(many) && bb < X.SEG_SOFT, '5000-op segment round-trips, under 256 KB in atlas/1', { bj, bb });
-    X.setCodecMode('json'); ok(JSON.stringify(X.decodeSegment(b)) === JSON.stringify(s), 'JSON-mode reader still decodes binary segments (magic detect)');
-    X.setCodecMode('bin'); const warns = []; X.onCodecFallback(w => warns.push(w));
     const segs = [1, 2, 3, 4].map(i => seg(i % 2 ? 'alice' : 'bob', i, 100 + i, [{ op: 'set', path: 'joys/i3/value', value: i }, { op: 'add', path: 'items/i1/notes', value: 'n' + i }]));
     const pure = X.replay(segs.map(sg => E('r/' + sg.writer, sg)), SEED).S;
-    const mixed = segs.map((sg, i) => { X.setCodecMode(i % 2 ? 'json' : 'bin'); const by = X.encodeSegment(sg); return { by, sg: X.decodeSegment(by) }; });
+    const mixed = segs.map((sg, i) => { const by = i % 2 ? legacyJSON(sg) : X.encodeSegment(sg); return { by, sg: X.decodeSegment(by) }; });
     ok(mixed.filter(m => X.isBinary(m.by)).length === 2 && X.stateDigest(X.replay(mixed.map(m => E('r/' + m.sg.writer, m.sg)), SEED).S) === X.stateDigest(pure),
-      'mixed JSON + binary log decodes and replays to the identical state');
-    X.setCodecMode('bin'); X.setBinaryCodec({ encode() { throw new Error('boom'); }, decode: codec.decode });
-    const fb = X.encodeSegment(s); ok(!X.isBinary(fb) && X.extOf(fb) === '.json' && warns.some(w => /boom/.test(w)) && JSON.stringify(X.decodeSegment(fb)) === JSON.stringify(s),
-      'binary encode failure falls back to JSON for that write with a warning (nothing lost)', warns);
-    X.setBinaryCodec(null); let need = false; try { X.decodeSegment(b); } catch (e) { need = !!e.needCodec; } ok(need, 'binary segment without codec -> needCodec error (no guess)'); } }
+      'old log mixing legacy .json and .bin decodes and replays to the identical state');
+    X.setBinaryCodec({ encode() { throw new Error('boom'); }, decode: codec.decode }); let fe = null, fb = null; try { fb = X.encodeSegment(s); } catch (e) { fe = e; }
+    ok(fb === null && fe && fe.codecError && /boom/.test(fe.message), 'binary encode failure throws codecError (no JSON written; caller keeps the batch queued)', fe && fe.message);
+    X.setBinaryCodec({ encode: () => te.encode('{"not":"binary"}'), decode: codec.decode }); let me = null; try { X.encodeSegment(s); } catch (e) { me = e; }
+    ok(me && me.codecError, 'codec output without atlas magic is refused (never written as a JSON-looking file)');
+    X.setBinaryCodec(null); let need = false; try { X.decodeSegment(b); } catch (e) { need = !!e.needCodec; } ok(need, 'binary segment without codec -> needCodec error (no guess)'); }
 console.log(`\nRESULT ${n - bad}/${n} passed`); process.exit(bad ? 1 : 0);

@@ -39,10 +39,10 @@ Date: 2026-11-02. Legend: **[V-curl]** verified by curl this session · **[V-doc
 
 ```
 atlas/<atlasId>/
-  snapshot.bin          # compact binary snapshot at log position N (snapshot.json = debug form)
+  snapshot.bin          # compact binary snapshot at log position N (binary only since 2026-11-03)
   snapshot.meta.json    # {"baseSeq":{"writerA":120,...},"commit":"<sha>"}
   log/<writerId>/<seq-start>.bin   # append-only segments, ONE DIRECTORY PER WRITER
-  log/<writerId>/<seq-start>.json  # optional debug twin
+  # (legacy .json segments from earlier tests are read-only; nothing writes .json any more)
 ```
 
 - **One log per writer** (recommended): each writer only creates new segment files in its own folder, so Contents PUT never has a blob-sha conflict with another writer. Creating a new file still makes a commit on `main`; GitHub serializes these server-side, so concurrent creates of *different* paths should both succeed, but may occasionally 409 under contention → retry [A, live test]. Alternative "one shared log with CAS" works but every writer contends on one sha; fine for 2 clients, poor for many.
@@ -56,7 +56,7 @@ atlas/<atlasId>/
 ## (d) Multi-user design: one public log repo per writer (current)
 
 **Decision (Matthew, 2026-11-02):** nobody hands over tokens for the account that owns a shared repo. Each writer:
-- owns a **public** repo `<login>/atlas-sync-log` (name configurable) and writes only there: `log/<writerId>/<seq 6 digits>.json`, one Contents API `PUT` per batch, no `branch` field (default branch). `writerId` defaults to the GitHub login.
+- owns a **public** repo `<login>/atlas-sync-log` (name configurable) and writes only there: `log/<writerId>/<seq 6 digits>.bin`, one Contents API `PUT` per batch, no `branch` field (default branch). `writerId` defaults to the GitHub login.
 - reads every repo in `[own, ...peers]`. Peers are `owner/repo` strings (comma/newline separated), kept in `sessionStorage` and the `?peers=` URL param. "Copy" shares your own `owner/repo`; "Copy share link" builds a link with `?peers=` (no token, no writer id).
 
 **Reading a repo** (anonymous if signed out, else with the token for the higher limit): `GET /repos/{o}/{r}/git/ref/heads/main` with `If-None-Match` → 304 = nothing new; 409 = empty repo (no branch yet); 200 with a new sha → `GET /git/trees/{sha}?recursive=1`, then `GET /git/blobs/{sha}` for each unseen `log/<w>/<seq>` file (blobs are immutable). A segment whose `writer`/`seq` disagree with its path is ignored. [Endpoints: A, standard; 409-on-empty for git refs: docs say refs cannot be created on empty repos [V-docs], the exact 409 body for GET is A.]
@@ -103,5 +103,18 @@ atlas/<atlasId>/
 - Codec availability without a backend: embedded copy in `client.html` (`tools/embed_codec.js`, page ~590 KB vs ~68 KB stripped), else
   `atlas_codec.bundle.js` next to the page, loaded once at startup; writes wait for that load. The public repo ships the page stripped,
   because the codec is the Artist's code (ADR 0111); embedding it publicly needs Matthew's explicit OK.
-- Never lose a change: no codec / load failure / encode exception -> that batch is JSON, warning shown, queue drains normally.
+- (Superseded 2026-11-03, see below.)
 - Size limits are unchanged (256 KB soft, 1 MB hard per segment/pack); binary makes them far easier to meet (5000 ops: 9,721 B vs 391,865 B).
+
+## Binary only; JSON read-only legacy (2026-11-03, Matthew's decision, ADR 0113)
+- Binary atlas/1 is the **only** write format for segments, packs and snapshots (page and CLI). Removed: the JSON write path,
+  `?codec=json`, **Write JSON (debug)**, CLI `--codec json`, and the fallback-to-JSON-on-codec-failure behaviour. The section above
+  ("primary write format") is superseded where it mentions JSON writes or the fallback.
+- Changes still never fail: no codec / load failure / encode exception -> `encode*()` throws, nothing is written to GitHub in any format,
+  the batch stays queued in op form (page: memory + sessionStorage `atlasSyncQueue`, never the token; CLI: `outbox.json` + a `queued`
+  journal line, exit 4) with a visible "codec required to write" error. The page retries the codec load and drains the queue as `.bin`;
+  the CLI writes it on the next `flush`/`propose` with a codec.
+- Kept: the read-only JSON decoder (magic-byte detect), so `.json` segments from earlier tests still replay. Removing it was not
+  trivially safe (existing test logs and the CLI/page readers depend on it); it can go once no `.json` logs remain.
+- The public page ships without the codec, so it cannot write on its own; it shows **Codec required to write** and still reads legacy
+  `.json` (binary needs the codec). The private embedded build (tools/embed_codec.js) writes `.bin`.

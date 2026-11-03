@@ -54,20 +54,19 @@ with sync_playwright() as p:
     until(A,"[...A.confirmed.values()].filter(c=>c.seg.ops.some(o=>o.path==='joys/i2/value')).length===2"); until(B,"[...A.confirmed.values()].filter(c=>c.seg.ops.some(o=>o.path==='joys/i2/value')).length===2")
     win=A.evaluate("(()=>{const l=[...A.confirmed.values()].filter(c=>c.seg.ops.some(o=>o.path==='joys/i2/value')).sort(X7.cmpOrder); return l[l.length-1].seg.ops[0].value})()")
     check('near-simultaneous real-clock conflict: both hold the max-(ts,writer,seq) value', until(A,f"A.view.v['joys/i2/value']==={win}") and until(B,f"A.view.v['joys/i2/value']==={win} && {DIG}==={json.dumps(A.evaluate(DIG))}"), win)
-    # ---- (a) binary codec: embedded, primary write format ----
+    # ---- (a) binary codec: embedded, the only write format ----
     check('binary codec available (embedded or local bundle) and the default write format (no script src)', until(A,"X7.codecMode()==='bin'") and A.evaluate("!document.querySelector('script[src]:not([src*=atlas_codec])')"))
     A.evaluate("propose([{op:'set',path:'joys/i1/value',value:11},{op:'add',path:'items/i1/notes',value:'é ✓'}])"); idle(A)
     st=get('/__mock/state'); binf=[f for c in st[ALICE]['commits'] for f in c['files'] if f.endswith('.bin')]
     allf=[f for c in st[ALICE]['commits'] for f in c['files'] if f.startswith('log/alice/')]
     check('every alice segment written via Contents API as log/alice/<seq>.bin (201, binary default)', len(binf)>=1 and binf==allf, allf)
-    B.evaluate("setCodec(true)")
-    check('JSON-debug reader (bob, Write JSON ticked) decodes binary and converges', until(B,"A.view.v['joys/i1/value']===11 && (A.view.v['items/i1/notes']||[]).includes('é ✓') && X7.codecMode()==='json'"))
+    check('reader bob decodes alice binary and converges (no JSON write option on the page)', until(B,"A.view.v['joys/i1/value']===11 && (A.view.v['items/i1/notes']||[]).includes('é ✓')") and B.evaluate("!$('fCodec') && typeof setCodec==='undefined'"))
     tr=get('/repos/alice/atlas-sync-log/git/trees/'+get('/repos/alice/atlas-sync-log/git/ref/heads/main')['object']['sha']+'?recursive=1')
     sha=[e['sha'] for e in tr['tree'] if e['path']==binf[0]][0]; import base64; raw=base64.b64decode(get('/repos/alice/atlas-sync-log/git/blobs/'+sha)['content'])
     check('stored blob is the binary container (JRBA magic), not JSON', raw[:4]==b'JRBA', raw[:8])
     N=A.context.new_page(); N.goto(url(ALICE,'&nocodec=1&codecsrc=missing_codec.js'))
     check('reader without a codec reports a clear error and skips (no guess)', until(N,"A.errors.some(e=>e.includes('Binary codec: cannot load'))"))
-    N.close(); B.evaluate("setCodec(false)"); until(B,"X7.codecMode()==='bin'")
+    N.close()
     # ---- (c) compaction (own segments, one Git Data commit) ----
     for i in range(4): A.evaluate(f"propose([{{op:'delta',path:'joys/i1/value',by:1}}])"); idle(A)
     before=sorted(get('/__mock/state')[ALICE]['paths']) if 'paths' in get('/__mock/state')[ALICE] else None

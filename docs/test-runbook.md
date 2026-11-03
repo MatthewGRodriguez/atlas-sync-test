@@ -61,9 +61,9 @@ Each repo should only contain commits `atlas:demo writer:<its owner> seq:N` with
 node tools/mock_github.js                         # http://localhost:18799, multi-account
 python3 -m http.server 8798 --bind 127.0.0.1      # from repo root, for the http:// check
 python3 tools/e2e_test.py                         # Playwright + one headless Chrome
-# or all, each on a fresh mock (needs clients/atlas_codec.bundle.js or an embedded codec, since binary is the default):
-node tools/core_test.js                           # 28
-for t in e2e_test e2e_more_test cli_e2e_test e2e_codec_test; do tools/run_e2e.sh tools/$t.py; done   # 48, 23, 11, 17
+# or all, each on a fresh mock (needs clients/atlas_codec.bundle.js or an embedded codec, since binary is the only write format):
+node tools/core_test.js                           # 31
+for t in e2e_test e2e_more_test cli_e2e_test e2e_codec_test; do tools/run_e2e.sh tools/$t.py; done   # 48, 23, 11, 19
 ```
 Open `client.html?api=http://localhost:18799&peers=bob/atlas-sync-log` and paste a synthetic mock token:
 `test-valid-<login>[-anything]` (login `<login>`, writes only to repos it owns, can create repos), `test-readonly-<login>` (no write); anything else gets 401; no token = anonymous reads of public repos.
@@ -74,8 +74,9 @@ Run these only with two real accounts, after steps 1–5 pass.
 1. **Conflict**: both people edit the same value (for example Harbor walk joy) within about 5 s, then wait for 2 polls. Both pages must show
    the same value. The loser sees an "overwrote" line, and the winner sees "changed … from <other>".
 2. **Binary codec (default)**: with `atlas_codec.bundle.js` next to `client.html` (shared privately; or a privately embedded page),
-   make one edit. The repo shows `log/<you>/<seq>.bin`, and the other page converges. Without the codec the page shows the red
-   "writes fall back to JSON" warning and the edit lands as `.json`. With `?codec=json` edits land as `.json` with no warning.
+   make one edit. The repo shows `log/<you>/<seq>.bin`, and the other page converges. Without the codec the page shows **Codec required to write**,
+   the edit stays queued (nothing appears in the repo, nothing lost, a reload keeps it); put the codec back and press **Retry codec**:
+   the edit lands as `.bin`. There is no JSON write option any more; old `.json` segments are still read.
 3. **Compaction**: after 5 or more edits, click **Compact mine**. There is one new commit "… compact a-b", the singles disappear,
    and the other page plus a private window (no token) show the same state.
 4. **Snapshot**: click **Publish snapshot**, then open the page with `?usesnap=1` in a private window. It shows the same state.
