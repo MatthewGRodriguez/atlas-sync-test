@@ -19,10 +19,11 @@ file:///Users/<you>/atlas-sync-test/clients/client.html?writer=B
 Each writer writes only to `log/<writer>/`.
 
 ## 3. Create a token (one time, about 1 minute)
-1. In tab A click **Sign in with GitHub**. GitHub's *New fine-grained personal access token* page opens in a new tab, prefilled with name "Atlas sync", 30-day expiry and Contents: Read and write.
+1. In tab A click **Sign in with GitHub**. GitHub's *New fine-grained personal access token* page opens in the same tab, prefilled with name "Atlas sync", 30-day expiry and Contents: Read and write.
 2. Under **Repository access** pick **Only select repositories** → `MatthewGRodriguez/atlas-sync-test`.
 3. Under **Permissions** confirm **Contents: Read and write**.
 4. Click **Generate token** and copy it.
+5. Press the browser **Back** button to return to tab A (its settings and pre-sign-in state are restored from sessionStorage; no token is stored at this point).
 
 ## 4. Connect (both tabs)
 1. Paste the token into the **Token** field and click **Connect**. Tick **Remember for this tab** first if you want it to survive a reload of that tab (sessionStorage only; it is never saved to localStorage).

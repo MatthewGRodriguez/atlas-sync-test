@@ -14,7 +14,7 @@ An *atlas* is the Exp7 data format: a compact binary snapshot plus an append-onl
 
 ## Sign-in (honest note)
 
-`clients/client.html` has a **Sign in with GitHub** button, but it only opens GitHub's prefilled *new fine-grained token* page. You generate a token there (only this repo, Contents: Read and write, 30-day expiry) and paste it into the page. **This is a pasted token, not an OAuth sign-in: GitHub offers no sign-in for a static page without a backend** (the OAuth endpoints need a client secret and/or send no CORS headers). There is no proxy of any kind. The token is held in tab memory (optionally `sessionStorage` via "Remember for this tab"), never `localStorage`, never shown or logged. Never paste a token into chat or commit it.
+`clients/client.html` has a **Sign in with GitHub** button, but it only navigates the same tab to GitHub's prefilled *new fine-grained token* page (use the browser Back button to return). You generate a token there (only this repo, Contents: Read and write, 30-day expiry) and paste it into the page. **This is a pasted token, not an OAuth sign-in: GitHub offers no sign-in for a static page without a backend** (the OAuth endpoints need a client secret and/or send no CORS headers). There is no proxy of any kind. The token is held in tab memory (optionally `sessionStorage` via "Remember for this tab"), never `localStorage`, never shown or logged. Never paste a token into chat or commit it.
 
 ## Layout
 

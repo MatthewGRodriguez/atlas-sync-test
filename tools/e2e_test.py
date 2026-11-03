@@ -33,11 +33,19 @@ with sync_playwright() as p:
         pg.goto(url(FILE,w)); pages[w]=pg
     A,B=pages['A'],pages['B']
     check('parses from file:// (script ran)', A.evaluate("typeof applyOp==='function' && location.protocol==='file:'"))
-    # sign-in button opens the prefilled GitHub token page (popup captured, not loaded)
-    ctx.route('https://github.com/**', lambda r: r.fulfill(status=200, body='mock github page'))
-    with ctx.expect_page() as pi: A.click('#bSignIn')
-    pu=pi.value.url; pi.value.close()
-    check('Sign in button opens prefilled fine-grained PAT page', pu.startswith('https://github.com/settings/personal-access-tokens/new?') and 'contents=write' in pu and 'expires_in=30' in pu, pu)
+    # sign-in button navigates THIS tab to the exact prefilled GitHub token page (intercepted, never hits github.com)
+    PAT='https://github.com/settings/personal-access-tokens/new?name=Atlas%20sync&description=Static%20page%20access&expires_in=30&contents=write'
+    hits=[]
+    def gh(r): hits.append(r.request.url); r.fulfill(status=200, content_type='text/html', body='<title>mock github</title>mock github page')
+    ctx.route('https://github.com/**', gh)
+    A.click('#fRemember'); npages=len(ctx.pages)
+    with A.expect_navigation(): A.click('#bSignIn')
+    check('Sign in navigates same tab to exact prefilled PAT URL', A.url==PAT and hits==[PAT] and len(ctx.pages)==npages, (A.url, hits))
+    A.go_back(); A.wait_for_load_state()
+    check('Back returns to client with pre-sign-in state + note', A.url==url(FILE,'A') and until(A,"document.getElementById('returnNote').style.display!=='none' && document.getElementById('fRemember').checked && document.getElementById('fWriter').value==='A' && A.token===null && localStorage.length===0"), A.url)
+    A.reload(); A.wait_for_load_state()
+    check('reload after return still restores pre-sign-in state', until(A,"document.getElementById('returnNote').style.display!=='none' && document.getElementById('fRemember').checked && typeof applyOp==='function'"))
+    A.click('#fRemember')  # back to unchecked for the following checks
     check('token input is password type', A.evaluate("document.getElementById('fToken').type==='password'"))
     paste(A,'not-a-real-token')
     check('bad token rejected (401)', until(A,"document.getElementById('authMsg').textContent.includes('401')") and A.evaluate("A.token===null && !sessionStorage.getItem('atlasSyncToken')"), msg(A))
@@ -48,6 +56,7 @@ with sync_playwright() as p:
     for w,pg in pages.items():
         paste(pg, 'test-valid-'+w.lower(), remember=(w=='A'))
         check(f'{w} paste-token sign-in', until(pg,f"A.login==='synthetic-{w.lower()}'"), pg.evaluate('A.login'))
+    check('return note cleared after sign-in', A.evaluate("document.getElementById('returnNote').style.display==='none' && !sessionStorage.getItem('atlasSyncSignInPending')"))
     check('token never in localStorage; A remembered in sessionStorage, B memory only', A.evaluate("localStorage.length===0 && !!sessionStorage.getItem('atlasSyncToken')") and B.evaluate("localStorage.length===0 && !sessionStorage.getItem('atlasSyncToken')"))
     check('token not shown in page or diagnostics', all(not pg.evaluate("document.body.innerText.includes('test-valid-')") and pg.evaluate("document.getElementById('fToken').value===''") for pg in (A,B)))
     until(A,'A.synced'); until(B,'A.synced')

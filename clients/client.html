@@ -38,7 +38,8 @@ ol.steps{margin:6px 0;padding-left:20px}#authMsg{margin-top:6px}
  <div><button id="bStart" class="pri">Start sync</button> <button id="bStop">Stop</button> <span class="mut">Settings also accept URL params: ?writer=A&amp;api=…&amp;repo=…&amp;poll=7</span></div>
 </section>
 <section style="margin-top:12px"><h2>Sign in with GitHub (personal access token)</h2>
- <div><button id="bSignIn" class="pri">Sign in with GitHub</button> <span class="mut">opens GitHub's token page in a new tab</span></div>
+ <div><button id="bSignIn" class="pri">Sign in with GitHub</button> <span class="mut">opens GitHub's token page in this tab; after generating the token, use your browser's <b>Back</b> button to return here and paste it</span></div>
+ <div id="returnNote" class="ok" style="display:none"></div>
  <ol class="steps">
   <li>On the GitHub page, under <b>Repository access</b> pick <b>Only select repositories</b> → <code id="repoHint">MatthewGRodriguez/atlas-sync-test</code>.</li>
   <li>Under <b>Permissions</b> confirm <b>Contents: Read and write</b> (prefilled).</li>
@@ -293,7 +294,23 @@ async function catchUp(from, to){
 const PAT_URL = 'https://github.com/settings/personal-access-tokens/new?name=Atlas%20sync&description=Static%20page%20access&expires_in=30&contents=write';
 function mask(t){ return t ? `[token hidden, ${t.length} chars, prefix ${t.startsWith('github_pat_')?'github_pat_':t.startsWith('ghp_')?'ghp_':'other'}]` : '(none)'; }
 function authMsg(text, cls='mut'){ $('authMsg').className=cls; $('authMsg').textContent=text; }
-function openTokenPage(){ diag('opened GitHub fine-grained token page in a new tab'); const w=window.open(PAT_URL, '_blank', 'noopener,noreferrer'); if (w) try{ w.opener=null; }catch{} $('fToken').focus(); }
+const PENDING_KEY = 'atlasSyncSignInPending';
+const SETTING_IDS = ['fWriter','fRepo','fApi','fPoll','fLogRoot','fBase'];
+function openTokenPage(){
+  // Same-tab navigation: persist only non-secret pre-sign-in UI state (no token exists yet) in sessionStorage.
+  try { const st={at:Date.now(), remember:$('fRemember').checked, settings:{}}; SETTING_IDS.forEach(id=>st.settings[id]=$(id).value); sessionStorage.setItem(PENDING_KEY, JSON.stringify(st)); } catch {}
+  diag('navigating this tab to GitHub fine-grained token page (use Back to return)');
+  location.assign(PAT_URL);
+}
+function restorePending(fromBfcache){
+  let st=null; try { st = JSON.parse(sessionStorage.getItem(PENDING_KEY)||'null'); } catch {}
+  if (!st) return false;
+  if (!fromBfcache){ SETTING_IDS.forEach(id=>{ if (st.settings && st.settings[id]!=null) $(id).value=st.settings[id]; }); if (st.remember) $('fRemember').checked=true; }
+  if (!A.token){ $('returnNote').textContent='Back from GitHub: paste the token you generated into the Token field below and click Connect.'; $('returnNote').style.display=''; $('fToken').focus(); }
+  diag(`returned from GitHub token page (${fromBfcache?'bfcache':'reload'}); pre-sign-in state restored`);
+  return true;
+}
+function clearPending(){ try{ sessionStorage.removeItem(PENDING_KEY); }catch{} const n=$('returnNote'); if (n){ n.style.display='none'; n.textContent=''; } }
 async function authGet(path, token, label){
   let r; try { r = await fetch(api(path), {headers:{Accept:'application/vnd.github+json', Authorization:'Bearer '+token}, cache:'no-store'}); }
   catch(e){ diag(`${label}: GET ${api(path)} failed before a response (${e.name}: ${e.message})`); throw new Error(`network error on ${label}`); }
@@ -322,7 +339,7 @@ async function connect(tokenArg, fromStorage=false){
     try { if ($('fRemember').checked) sessionStorage.setItem(TOKEN_KEY, token); else sessionStorage.removeItem(TOKEN_KEY); } catch {}
     const note = perms ? 'write access confirmed' : 'write access not reported by GitHub; it will be confirmed on first write';
     authMsg(`Signed in as ${u.j.login}; ${A.repo}: ${note}.`, 'ev-ok'); ev(`signed in as ${u.j.login}`,'ev-ok');
-    diag(`connect: OK as ${u.j.login}; permissions ${perms?JSON.stringify(perms):'(not present)'}; stored in ${$('fRemember').checked?'memory + sessionStorage':'memory only'}`);
+    clearPending(); diag(`connect: OK as ${u.j.login}; permissions ${perms?JSON.stringify(perms):'(not present)'}; stored in ${$('fRemember').checked?'memory + sessionStorage':'memory only'}`);
     renderStatus(); pump(); return true;
   } catch(e){ fail(`Could not reach GitHub API: ${e.message}. See Sign-in diagnostics.`); return false; }
   finally { $('bConnect').disabled = false; renderStatus(); }
@@ -415,10 +432,12 @@ $('bDownload').onclick=()=>{
 $('fWriter').value = Q.get('writer')||'A'; $('fRepo').value = Q.get('repo')||'MatthewGRodriguez/atlas-sync-test';
 $('fApi').value = Q.get('api')||'https://api.github.com'; $('fPoll').value = Q.get('poll')||7;
 $('fLogRoot').value = Q.get('logroot')||'log'; $('fBase').value = Q.get('base')||'540e077df64c47e115a3bc91a653ecfa50d35238';
+restorePending(false);
 readSettings();
 $('repoHint').textContent = A.repo;
 try { const t = sessionStorage.getItem(TOKEN_KEY); if (t){ $('fRemember').checked = true; connect(t, true); } } catch {}
 A.view = {v:clone(SEED), rev:{}}; render();
 diag(`page loaded: origin "${location.origin}", protocol ${location.protocol}, secure context ${window.isSecureContext}`);
 if (Q.get('autostart')==='1') start();
+window.addEventListener('pageshow', e=>{ if (e.persisted) restorePending(true); });
 </script></body></html>
