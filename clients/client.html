@@ -23,7 +23,7 @@ table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #eef0f4;
 .kv{display:grid;grid-template-columns:150px 1fr;gap:2px 8px}.kv div:nth-child(odd){color:var(--mut)}
 .err{color:var(--bad)}.mut{color:var(--mut)}code{background:#f1f3f7;padding:0 4px;border-radius:3px}
 input[type=password]{padding:3px 6px;border:1px solid var(--b);border-radius:5px}
-ol.steps{margin:6px 0;padding-left:20px}#authMsg{margin-top:6px}
+ol.steps{margin:6px 0;padding-left:20px}#authMsg{margin-top:6px}#authMsg.warn{color:#a15c00;font-weight:600}
 </style></head><body>
 <header><h1>Atlas sync test</h1><span class="pill" id="hdrWriter">writer ?</span><span id="hdrUser" class="mut">not signed in</span><span id="hdrQueue" class="mut"></span></header>
 <main>
@@ -224,7 +224,7 @@ async function pump(){
         attempt++;
         if (r && r.status===422 && /sha/i.test(j.message||'')){ A.nextSeq = b.seq+1; b.seq = null; ev(`seq ${pad(A.nextSeq-1)} already exists, using next`); b.state='queued'; continue; }
         if (r && (r.status===401)){ b.state='queued'; on401('a write'); return; }
-        if (r && (r.status===404 || (r.status===403 && /not accessible|permission/i.test(j.message||'')))){ err(`Write refused (${r.status}): the token cannot write to this repo (needs Contents: Read and write on ${A.repo}). Batch stays queued.`); b.state='queued'; renderQueue(); A.writing=false; return; }
+        if (r && (r.status===404 || (r.status===403 && /not accessible|permission/i.test(j.message||'')))){ err(`Write refused (${r.status}): the token cannot write to this repo (needs Contents: Read and write on ${A.repo}${A.login && A.login.toLowerCase()!==A.repo.split('/')[0].toLowerCase() ? `, and account ${A.login} must be a collaborator with write access` : ''}). Batch stays queued.`); b.state='queued'; renderQueue(); A.writing=false; return; }
         let delay;
         const ra = r && r.headers.get('retry-after');
         if (r && (r.status===403||r.status===429)){
@@ -329,17 +329,24 @@ async function connect(tokenArg, fromStorage=false){
     const u = await authGet('/user', token, 'GET /user');
     if (u.r.status===401){ fail('GitHub rejected this token (401): it is wrong, expired, or revoked.'); return false; }
     if (!u.r.ok || !u.j.login){ fail(`Could not check the token (GET /user returned ${u.r.status}).`); return false; }
+    const login=u.j.login, owner=A.repo.split('/')[0], otherAcct = login.toLowerCase()!==owner.toLowerCase();
+    const acctNote = otherAcct ? `Token belongs to GitHub account "${login}", not the repo owner "${owner}". A public repo is readable by any token, but to write, "${login}" must be added as a collaborator with write access to ${A.repo} (and accept the invite), or the repo must be owned by the signed-in account.` : '';
+    diag(`GET /user: signed-in login "${login}"; repo owner "${owner}"${otherAcct?' - DIFFERENT ACCOUNT (must be a collaborator with write access)':' (same account)'}`);
     const rp = await authGet(`/repos/${A.repo}`, token, `GET /repos/${A.repo}`);
     if (rp.r.status===401){ fail('GitHub rejected this token (401) on the repo check.'); return false; }
-    if (rp.r.status===404 || rp.r.status===403){ fail(`Token works (user ${u.j.login}) but cannot see ${A.repo}. Edit the token: Repository access → Only select repositories → ${A.repo}.`); return false; }
+    if (rp.r.status===404){ fail(`Token works (user ${login}) but cannot see ${A.repo}. Edit the token: Repository access → Only select repositories → ${A.repo}.${otherAcct?' '+acctNote:''}`); return false; }
     if (!rp.r.ok){ fail(`Repo check failed (HTTP ${rp.r.status}).`); return false; }
     const perms = rp.j.permissions;
-    if (perms && perms.push === false){ fail(`Token can read ${A.repo} but lacks write access. Edit the token: Permissions → Contents: Read and write.`); return false; }
-    A.token = token; A.login = u.j.login; $('fToken').value = '';
+    diag(`GET /repos/${A.repo}: permissions ${perms && typeof perms==='object' ? Object.entries(perms).map(([k,v])=>k+'='+v).join(', ') : '(not present)'}`);
+    A.token = token; A.login = login; $('fToken').value = '';
     try { if ($('fRemember').checked) sessionStorage.setItem(TOKEN_KEY, token); else sessionStorage.removeItem(TOKEN_KEY); } catch {}
-    const note = perms ? 'write access confirmed' : 'write access not reported by GitHub; it will be confirmed on first write';
-    authMsg(`Signed in as ${u.j.login}; ${A.repo}: ${note}.`, 'ev-ok'); ev(`signed in as ${u.j.login}`,'ev-ok');
-    clearPending(); diag(`connect: OK as ${u.j.login}; permissions ${perms?JSON.stringify(perms):'(not present)'}; stored in ${$('fRemember').checked?'memory + sessionStorage':'memory only'}`);
+    let note, cls='ev-ok';
+    if (perms && perms.push===true) note='write access confirmed';
+    else if (perms){ note=`WARNING: GitHub reports no write access (permissions.push=${perms.push}); connected anyway, writes will be attempted and the first refused write will say so`; cls='warn'; }
+    else note='write access not reported by GitHub; it will be confirmed on first write';
+    authMsg(`Signed in as ${login}; ${A.repo}: ${note}.${acctNote?' '+acctNote:''}`, cls); ev(`signed in as ${login}`,'ev-ok');
+    if (cls==='warn') ev(`warning: no write access reported for ${login} on ${A.repo}${otherAcct?' (different account from owner '+owner+')':''}`,'ev-err');
+    clearPending(); diag(`connect: OK as ${login}${cls==='warn'?' WITH WARNING (no push permission reported)':''}; stored in ${$('fRemember').checked?'memory + sessionStorage':'memory only'}`);
     renderStatus(); pump(); return true;
   } catch(e){ fail(`Could not reach GitHub API: ${e.message}. See Sign-in diagnostics.`); return false; }
   finally { $('bConnect').disabled = false; renderStatus(); }

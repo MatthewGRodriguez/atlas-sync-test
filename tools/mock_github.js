@@ -5,7 +5,7 @@
 // Runtime knobs: GET /__mock/config?fail403=N&failPut409=N&revoke=<token>|all|none   GET /__mock/state
 // Synthetic Bearer tokens (fake, test-only):
 //   test-valid-<name>    -> login synthetic-<name>, repo visible, permissions.push true
-//   test-readonly-<name> -> login synthetic-<name>, repo visible, permissions.push false, writes 403
+//   test-readonly-<name> -> login synthetic-<name>, repo visible, connects (client warns), permissions.push false, writes 403
 //   test-norepo-<name>   -> login synthetic-<name>, repo not selected (404 on repo endpoints)
 //   anything else / missing / revoked -> 401 on /user and every repo endpoint
 'use strict';

@@ -31,7 +31,9 @@ Each writer writes only to `log/<writer>/`.
 3. Possible messages:
    - "rejected this token (401)": wrong, expired, or revoked token.
    - "cannot see MatthewGRodriguez/atlas-sync-test": the repo was not selected under Repository access.
-   - "lacks write access": Contents is not Read and write.
+   - "WARNING: GitHub reports no write access": the page still connects, but writes will be refused. Check Contents: Read and write on the token, and see the next item.
+   - "Token belongs to GitHub account X, not the repo owner" (wrong account / not a collaborator): the token was made on a different GitHub account. A public repo is readable by any token, so GET /user and the repo check both return 200, but writing needs that account to be a collaborator with write access (Settings → Collaborators on the repo, then accept the invite), or create the token while signed in as the repo owner. Sign-in diagnostics log the login and the raw `permissions` object.
+   - "Write refused (403)": first write was rejected; the batch stays queued and is retried after you fix access and reconnect.
 4. Paste the same token in tab B and click **Connect** (one token for both tabs is fine).
 
 If a token expires or is revoked during the test, the page signs out on the next 401 and says so.
