@@ -65,3 +65,15 @@ python3 tools/e2e_test.py                         # Playwright + one headless Ch
 Open `client.html?api=http://localhost:18799&peers=bob/atlas-sync-log` and paste a synthetic mock token:
 `test-valid-<login>[-anything]` (login `<login>`, writes only to repos it owns, can create repos), `test-readonly-<login>` (no write); anything else gets 401; no token = anonymous reads of public repos.
 Knobs: `/__mock/mkrepo?full=bob/atlas-sync-log&init=0` (empty repo), `/__mock/config?createForbidden=1` (POST /user/repos → 403), `?revoke=<token>|none`, `?fail403=N&failPut409=N`; `/__mock/state`. Client param `anonmin=<s>` overrides the anonymous per-repo poll floor (tests only). Never use ports 8765 or 8791.
+
+## 8. Optional Exp7 checks on real GitHub (prepared, NOT run yet)
+Run these only with two real accounts, after steps 1–5 pass.
+1. **Conflict**: both people edit the same value (for example Harbor walk joy) within about 5 s, then wait for 2 polls. Both pages must show
+   the same value. The loser sees an "overwrote" line, and the winner sees "changed … from <other>".
+2. **Binary codec** (only if the bundle is shared privately): put `atlas_codec.bundle.js` next to `client.html` and tick
+   Binary segments. Make one edit. The repo shows `log/<you>/<seq>.bin`, and the other page converges.
+3. **Compaction**: after 5 or more edits, click **Compact mine**. There is one new commit "… compact a-b", the singles disappear,
+   and the other page plus a private window (no token) show the same state.
+4. **Snapshot**: click **Publish snapshot**, then open the page with `?usesnap=1` in a private window. It shows the same state.
+5. **CLI**: `ATLAS_TOKEN=<token> node clients/atlas-cli.js status` (type the token in the shell only, never into a file).
+   Then run `node clients/atlas-cli.js propose '[{"op":"delta","path":"joys/i1/value","by":1}]'`. The page shows it after one poll.
