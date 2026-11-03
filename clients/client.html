@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Atlas sync test client</title>
+<!-- Single-file client for the Exp7 atlas-sync experiment. No external dependencies.
+     SYNTHETIC data only. No token or client secret is ever stored in this file or written to the repo. -->
+<style>
+:root{--b:#d8dde6;--fg:#1d2430;--mut:#667085;--acc:#2f6feb;--ok:#1a7f37;--bad:#c62828;--bg:#f6f8fb}
+*{box-sizing:border-box}body{font:14px/1.4 system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:var(--bg);color:var(--fg)}
+header{background:#fff;border-bottom:1px solid var(--b);padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+header h1{font-size:16px;margin:0}.pill{border-radius:99px;padding:2px 10px;background:#eef2ff;font-weight:600}
+main{display:grid;grid-template-columns:minmax(380px,1.2fr) minmax(320px,1fr);gap:12px;padding:12px}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+section{background:#fff;border:1px solid var(--b);border-radius:8px;padding:10px 12px}
+section h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut);margin:0 0 8px}
+label{display:inline-flex;gap:4px;align-items:center;margin:2px 8px 2px 0}input,select,button,textarea{font:inherit}
+input[type=text],input[type=number],input[type=url]{padding:3px 6px;border:1px solid var(--b);border-radius:5px}
+input[type=number]{width:70px}button{padding:3px 10px;border:1px solid var(--b);border-radius:5px;background:#fff;cursor:pointer}
+button.pri{background:var(--acc);color:#fff;border-color:var(--acc)}button:disabled{opacity:.5;cursor:default}
+table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #eef0f4;padding:4px;text-align:left;vertical-align:top}
+.note{display:inline-block;background:#f1f3f7;border-radius:4px;padding:0 6px;margin:1px}.note button{border:0;padding:0 2px;background:none;color:var(--bad)}
+.log{font:12px/1.35 ui-monospace,Menlo,monospace;max-height:260px;overflow:auto;background:#fbfcfe;border:1px solid #eef0f4;padding:4px;white-space:pre-wrap}
+.ev-changed{color:var(--bad);font-weight:600}.ev-err{color:var(--bad)}.ev-ok{color:var(--ok)}
+.kv{display:grid;grid-template-columns:150px 1fr;gap:2px 8px}.kv div:nth-child(odd){color:var(--mut)}
+.err{color:var(--bad)}.mut{color:var(--mut)}code{background:#f1f3f7;padding:0 4px;border-radius:3px}
+.devcode{font:600 22px ui-monospace,monospace;letter-spacing:.1em}
+</style></head><body>
+<header><h1>Atlas sync test</h1><span class="pill" id="hdrWriter">writer ?</span><span id="hdrUser" class="mut">not signed in</span><span id="hdrQueue" class="mut"></span></header>
+<main>
+<div>
+<section><h2>Setup</h2>
+ <label>Writer id <input type="text" id="fWriter" size="6"></label>
+ <label>Repo <input type="text" id="fRepo" size="32"></label>
+ <label>Poll every <input type="number" id="fPoll" min="2" max="300"> s</label><br>
+ <label>API base <input type="url" id="fApi" size="28"></label>
+ <label>Log root <input type="text" id="fLogRoot" size="10"></label>
+ <label>Base commit <input type="text" id="fBase" size="12" title="compare starts from this commit (the repo's first commit)"></label>
+ <div><button id="bStart" class="pri">Start sync</button> <button id="bStop">Stop</button> <span class="mut">Settings also accept URL params: ?writer=A&amp;api=…&amp;client_id=…&amp;auth=…&amp;proxy=…&amp;poll=7</span></div>
+</section>
+<section style="margin-top:12px"><h2>Sign in with GitHub</h2>
+ <label>OAuth App client ID <input type="text" id="fClientId" size="24" placeholder="Iv1… / Ov23… (public, not a secret)"></label>
+ <label>Scope <input type="text" id="fScope" size="12"></label><br>
+ <label>Auth base <input type="url" id="fAuth" size="26"></label>
+ <label>Proxy URL <input type="url" id="fProxy" size="26" placeholder="(empty = direct)"></label>
+ <div style="margin-top:6px"><button id="bDevice" class="pri">Sign in with GitHub</button> <button id="bCancel">Cancel</button> <button id="bSignOut">Sign out</button> <button id="bWeb" title="Diagnostic only: cannot finish without a client secret">Try web flow (diagnostic)</button></div>
+ <div id="devBox" style="display:none;margin-top:8px">Enter this code at <a id="devLink" target="_blank" rel="noopener"></a>: <div class="devcode" id="devCode"></div><span class="mut" id="devState"></span></div>
+ <div class="mut" style="margin-top:4px">The token is kept only in this tab (memory + sessionStorage). It is never written to the repo or localStorage.</div>
+</section>
+<section style="margin-top:12px"><h2>Plan / atlas (synthetic)</h2>
+ <table><thead><tr><th>Item</th><th>Joy</th><th>Notes</th></tr></thead><tbody id="items"></tbody></table>
+ <div style="margin-top:8px"><b>Alternatives: <span id="altName"></span></b><table><tbody id="alts"></tbody></table></div>
+ <div style="margin-top:8px"><label><b>Requirement (jreq):</b> <span id="jreqLabel"></span> needs <select id="jreqSel"></select></label></div>
+ <div><label><b>Start date</b> <input type="date" id="dateIn"></label></div>
+ <div style="margin-top:8px"><button id="bEmpty">Send empty batch</button> <details style="display:inline-block"><summary>Raw batch (advanced)</summary><textarea id="rawOps" rows="4" cols="50">[{"op":"add","path":"items/i1/notes","value":"bring hat"}]</textarea><br><button id="bRaw">Propose raw batch</button></details></div>
+</section>
+<section style="margin-top:12px"><h2>Event log</h2><div class="log" id="evlog"></div></section>
+</div>
+<div>
+<section><h2>Status</h2><div class="kv" id="status"></div><div style="margin-top:6px"><button id="bPollNow">Poll now</button> <button id="bDownload">Download state (JSON)</button></div></section>
+<section style="margin-top:12px"><h2>Write queue</h2><div class="log" id="qview" style="max-height:120px"></div></section>
+<section style="margin-top:12px"><h2>Revisions / owners per path</h2><table><thead><tr><th>Path</th><th>Value</th><th>Rev</th><th>Owner</th><th>Last (writer:seq)</th></tr></thead><tbody id="revs"></tbody></table></section>
+<section style="margin-top:12px"><h2>Sign-in diagnostics</h2><div class="mut">Records what happened in this browser. Contains no token. Copy it into your report if sign-in fails.</div>
+ <div class="log" id="diag"></div><button id="bCopyDiag">Copy diagnostics</button> <button id="bProbe">Run CORS probe only</button></section>
+</div>
+</main>
+<script>
+'use strict';
+/* ================= codec hooks (drop the binary atlas codec in here) =================
+   All four take/return Uint8Array <-> JS objects. Default = JSON (debug form). */
+const te = new TextEncoder(), td = new TextDecoder();
+function encodeSegment(seg){ return te.encode(JSON.stringify(seg, null, 1)); }
+function decodeSegment(bytes){ return JSON.parse(td.decode(bytes)); }
+function encodeSnapshot(snap){ return te.encode(JSON.stringify(snap, null, 1)); }
+function decodeSnapshot(bytes){ return JSON.parse(td.decode(bytes)); }
+const SEGMENT_EXT = '.json'; // change to '.bin' with the binary codec
+/* Compaction: deferred. Placeholder only. */
+function compact(){ throw new Error('compaction not implemented in this test (deferred)'); }
+
+/* ================= helpers ================= */
+const $ = id => document.getElementById(id);
+const Q = new URLSearchParams(location.search);
+const now = () => new Date().toLocaleTimeString();
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const b64enc = u8 => { let s=''; for (let i=0;i<u8.length;i+=0x8000) s += String.fromCharCode.apply(null, u8.subarray(i,i+0x8000)); return btoa(s); };
+const b64dec = s => Uint8Array.from(atob(s.replace(/\s/g,'')), c => c.charCodeAt(0));
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const clone = o => JSON.parse(JSON.stringify(o));
+const pad = n => String(n).padStart(6,'0');
+const TOKEN_KEY = 'atlasSyncToken';
+const MAX_OPS = 5000;
+
+/* ================= synthetic seed atlas (invented) ================= */
+const SEED = {
+  'items/i1/name':'Harbor walk','items/i2/name':'Old tram ride','items/i3/name':'Hilltop castle',
+  'items/i1/notes':[],'items/i2/notes':['buy day pass'],'items/i3/notes':[],
+  'joys/i1/value':3,'joys/i2/value':5,'joys/i3/value':4,
+  'alts/g1/name':'Where to sleep','alts/g1/pick':'o1',
+  'alts/g1/opts/o1/name':'Guesthouse','alts/g1/opts/o1/pref':2,'alts/g1/opts/o1/unavail':false,
+  'alts/g1/opts/o2/name':'Small hotel','alts/g1/opts/o2/pref':1,'alts/g1/opts/o2/unavail':false,
+  'alts/g1/opts/o3/name':'Camping','alts/g1/opts/o3/pref':0,'alts/g1/opts/o3/unavail':true,
+  'jreq/i3/value':'i1','dates/start/value':'2026-12-01'
+};
+const isList = p => /\/notes$/.test(p);
+
+/* ================= op rules (Exp7 proposal rules summary) =================
+ set: overwrite, no stale check. delta: numeric add (missing = 0). ref: like set, value is an id.
+ add: list member already present = no-op; missing path = create; existing scalar = rejected 'exists'.
+ remove: missing (path or member) = no-op. Applied overwrite by another writer => changed {path,from}.
+ Revisions are per path; ownership goes to the writer who last changed the path. */
+function applyOp(S, op, writer, seq){
+  const p = op.path; if (typeof p !== 'string' || !p) return {status:'rejected', reason:'bad path'};
+  const has = Object.prototype.hasOwnProperty.call(S.v, p); const before = has ? clone(S.v[p]) : undefined;
+  let after, status = 'applied';
+  switch (op.op){
+    case 'set': case 'ref': after = op.op==='ref' ? op.target ?? op.value : op.value; if (has && JSON.stringify(before)===JSON.stringify(after)) status='noop'; break;
+    case 'delta': { const by = Number(op.by ?? op.value); if (!isFinite(by)) return {status:'rejected',reason:'delta not a number'};
+      if (has && typeof before !== 'number') return {status:'rejected',reason:'delta on non-number'}; after = (has?before:0)+by; if (by===0) status='noop'; break; }
+    case 'add':
+      if (isList(p)){ const L = has ? before : []; if (L.includes(op.value)) status='noop'; else after = L.concat([op.value]); }
+      else if (has) return {status:'rejected', reason:'exists'}; else after = op.value; break;
+    case 'remove':
+      if (!has) status='noop';
+      else if (isList(p) && op.value !== undefined){ if (!before.includes(op.value)) status='noop'; else after = before.filter(x=>x!==op.value); }
+      else after = undefined; break;
+    default: return {status:'rejected', reason:'unknown op '+op.op};
+  }
+  if (status==='noop') return {status};
+  const prev = S.rev[p] || {rev:0, owner:null};
+  if (after===undefined) delete S.v[p]; else S.v[p]=after;
+  const res = {status};
+  if (has && prev.owner && prev.owner!==writer) res.changed = {path:p, from:before, prevOwner:prev.owner};
+  S.rev[p] = {rev:prev.rev+1, owner:writer, last:writer+':'+seq};
+  return res;
+}
+function applyBatch(S, seg){
+  const ops = Array.isArray(seg.ops) ? seg.ops : [];
+  if (ops.length > MAX_OPS) return {rejected:'batch too large', results:[]};
+  const results = ops.map(o => applyOp(S, o, seg.writer, seg.seq));
+  return {results, changed: results.filter(r=>r.changed).map(r=>r.changed)};
+}
+
+/* ================= app state ================= */
+const A = {
+  writer:'', repo:'', api:'', logRoot:'', base:'', pollSec:7,
+  token:null, login:null,
+  confirmed:new Map(),   // path -> {seg, order:[commitIdx, writer, seq], commit}
+  pending:[],            // local batches: {id, ops, seq?, state:'queued'|'writing'|'written', commit?}
+  commitIdx:new Map(), nextCommitIdx:0,
+  lastSha:null, etag:null, nextSeq:1, synced:false, running:false, pollTimer:null,
+  lastPoll:'-', lastPollResult:'-', rate:'-', rateReset:null, lastCommit:'-', errors:[], lastWriteAt:0,
+  seenEvents:new Set(), view:null, writing:false
+};
+
+function ev(text, cls=''){ const d=document.createElement('div'); d.className=cls; d.textContent=`[${now()}] ${text}`; $('evlog').prepend(d); }
+function err(text){ A.errors.unshift(`[${now()}] ${text}`); A.errors.length=Math.min(A.errors.length,5); ev(text,'ev-err'); renderStatus(); }
+function diag(text){ const d=document.createElement('div'); d.textContent=`[${new Date().toISOString()}] ${text}`; $('diag').append(d); }
+
+/* ================= replay ================= */
+function sortedConfirmed(){
+  return [...A.confirmed.values()].sort((a,b)=> a.order[0]-b.order[0] || (a.order[1]<b.order[1]?-1:a.order[1]>b.order[1]?1:0) || a.order[2]-b.order[2]);
+}
+function rebuild(){
+  const S = {v:clone(SEED), rev:{}};
+  for (const c of sortedConfirmed()){
+    const r = applyBatch(S, c.seg);
+    for (const [i,res] of r.results.entries()){
+      const key = `${c.seg.writer}:${c.seg.seq}:${i}`;
+      if (A.seenEvents.has(key)) continue; A.seenEvents.add(key);
+      if (c.seg.writer === A.writer) continue;
+      const op = c.seg.ops[i];
+      if (res.changed && res.changed.prevOwner === A.writer)
+        ev(`CHANGED: ${res.changed.path} was ${JSON.stringify(res.changed.from)} (yours), now ${JSON.stringify(S.v[res.changed.path])} by ${c.seg.writer}:${c.seg.seq}`,'ev-changed');
+      else ev(`received ${c.seg.writer}:${c.seg.seq} ${op.op} ${op.path} -> ${res.status}${res.reason?' ('+res.reason+')':''}`);
+    }
+  }
+  for (const b of A.pending.filter(b=>!A.confirmed.has(b.repoPath))) applyBatch(S, {writer:A.writer, seq:b.seq??'pending', ops:b.ops});
+  A.view = S; render();
+}
+
+/* ================= proposing ================= */
+function propose(ops){
+  if (!Array.isArray(ops) || ops.length > MAX_OPS){ err(`Batch rejected: must have 0..${MAX_OPS} ops`); return; }
+  // local acceptance check against the current view
+  const S = clone(A.view); const r = applyBatch(S, {writer:A.writer, seq:'local', ops});
+  r.results.forEach((res,i)=>{ if (res.status!=='applied') ev(`local: ${ops[i].op} ${ops[i].path} -> ${res.status}${res.reason?' ('+res.reason+')':''}`, res.status==='rejected'?'ev-err':''); });
+  A.pending.push({id:Math.random().toString(36).slice(2), ops, state:'queued'});
+  rebuild(); pump();
+}
+function hdr(extra={}){ const h={Accept:'application/vnd.github+json'}; if (A.token) h.Authorization='Bearer '+A.token; return Object.assign(h, extra); }
+function api(path){ return A.api.replace(/\/$/,'') + path; }
+function repoPath(p){ return p.split('/').map(encodeURIComponent).join('/'); }
+function trackRate(r){ const v=r.headers.get('x-ratelimit-remaining'); if (v!=null) A.rate=v; const t=r.headers.get('x-ratelimit-reset'); if (t) A.rateReset=+t; }
+
+async function pump(){
+  if (A.writing) return; A.writing = true;
+  try {
+    while (A.running){
+      const b = A.pending.find(b=>b.state==='queued'); if (!b) break;
+      if (!A.token){ renderStatus(); break; }
+      if (!A.synced){ await sleep(500); continue; }
+      let attempt = 0;
+      while (A.running){
+        const wait = A.lastWriteAt + 1000 - Date.now(); if (wait>0) await sleep(wait);
+        if (b.seq == null) b.seq = A.nextSeq;
+        const path = `${A.logRoot}/${A.writer}/${pad(b.seq)}${SEGMENT_EXT}`;
+        const seg = {v:1, atlas:'demo', writer:A.writer, seq:b.seq, createdAt:new Date().toISOString(), ops:b.ops};
+        b.state='writing'; renderQueue();
+        let r, j={};
+        try {
+          A.lastWriteAt = Date.now();
+          r = await fetch(api(`/repos/${A.repo}/contents/${repoPath(path)}`), {method:'PUT', headers:hdr({'Content-Type':'application/json'}),
+            body: JSON.stringify({message:`atlas:demo writer:${A.writer} seq:${b.seq}-${b.seq}`, content:b64enc(encodeSegment(seg)), branch:'main'})});
+          trackRate(r); try { j = await r.json(); } catch {}
+        } catch(e){ r = null; err(`Write failed (network/CORS): ${e.message}`); }
+        if (r && (r.status===201 || r.status===200)){
+          b.state='written'; b.repoPath=path; b.commit=j.commit&&j.commit.sha; b.seg=seg; A.nextSeq=b.seq+1;
+          ev(`wrote ${A.writer}:${b.seq} (${b.ops.length} ops) commit ${String(b.commit).slice(0,7)}`,'ev-ok'); schedulePoll(300); break;
+        }
+        attempt++;
+        if (r && r.status===422 && /sha/i.test(j.message||'')){ A.nextSeq = b.seq+1; b.seq = null; ev(`seq ${pad(A.nextSeq-1)} already exists, using next`); b.state='queued'; continue; }
+        if (r && (r.status===401)){ err('Write refused: not signed in or token expired (401). Sign in again.'); b.state='queued'; A.token=null; renderStatus(); return; }
+        if (r && r.status===404){ err('Write refused (404): the token cannot write to this repo, or the repo name is wrong.'); }
+        let delay;
+        const ra = r && r.headers.get('retry-after');
+        if (r && (r.status===403||r.status===429)){
+          if (ra) delay = +ra*1000; else if (r.headers.get('x-ratelimit-remaining')==='0' && A.rateReset) delay = Math.max(1000, A.rateReset*1000-Date.now());
+          else delay = 60000*Math.pow(2,attempt-1);
+          err(`GitHub limit hit (${r.status}: ${j.message||''}). Waiting ${Math.round(delay/1000)} s.`);
+        } else { delay = Math.min(60000, 1000*Math.pow(2,attempt)) + Math.random()*500; if (r) err(`Write failed (${r.status}: ${j.message||''}). Retrying in ${Math.round(delay/1000)} s.`); }
+        b.state='queued'; renderQueue();
+        if (attempt>=6){ err(`Giving up on batch after ${attempt} tries; it stays queued (press Poll now/Start to retry).`); A.writing=false; return; }
+        await sleep(delay);
+      }
+    }
+  } finally { A.writing=false; renderQueue(); }
+}
+
+/* ================= polling ================= */
+function schedulePoll(ms){ clearTimeout(A.pollTimer); if (A.running) A.pollTimer=setTimeout(poll, ms); }
+async function getJSON(path){
+  const r = await fetch(api(path), {headers:hdr()}); trackRate(r);
+  if (!r.ok) throw new Error(`${r.status} on ${path.split('?')[0]}`); return r.json();
+}
+async function poll(){
+  if (!A.running) return;
+  try {
+    const r = await fetch(api(`/repos/${A.repo}/git/ref/heads/main`), {headers:hdr(A.etag?{'If-None-Match':A.etag}:{}) , cache:'no-store'});
+    trackRate(r); A.lastPoll = now(); A.lastPollResult = String(r.status);
+    if (r.status===304){ /* unchanged, free */ }
+    else if (r.ok){
+      A.etag = r.headers.get('etag'); const j = await r.json(); const sha = j.object.sha;
+      if (sha !== A.lastSha) await catchUp(A.lastSha || A.base, sha);
+    } else throw new Error(`ref poll returned ${r.status}`);
+  } catch(e){ A.lastPollResult='error'; err(`Poll failed: ${e.message}`); }
+  renderStatus(); schedulePoll(A.pollSec*1000);
+}
+async function catchUp(from, to){
+  const c = await getJSON(`/repos/${A.repo}/compare/${from}...${to}`);
+  for (const cm of c.commits||[]) if (!A.commitIdx.has(cm.sha)) A.commitIdx.set(cm.sha, A.nextCommitIdx++);
+  // map segment path -> commit via commit message "writer:X seq:N-M"
+  const byWS = new Map();
+  for (const cm of c.commits||[]){ const m=/writer:(\S+) seq:(\d+)/.exec(cm.commit.message||''); if (m) byWS.set(m[1]+':'+(+m[2]), cm.sha); }
+  const pre = A.logRoot.replace(/\/$/,'') + '/';
+  const files = (c.files||[]).filter(f=>f.filename.startsWith(pre) && f.status!=='removed').map(f=>f.filename).sort();
+  for (const path of files){
+    if (A.confirmed.has(path)) continue;
+    const m = path.slice(pre.length).match(/^([^/]+)\/(\d+)\.\w+$/); if (!m) continue;
+    const w = m[1], seq = +m[2];
+    const own = A.pending.find(b=>b.repoPath===path);
+    let seg = own && own.seg;
+    if (!seg){ const f = await getJSON(`/repos/${A.repo}/contents/${repoPath(path)}?ref=${to}`); seg = decodeSegment(b64dec(f.content)); }
+    const commit = byWS.get(w+':'+seq);
+    const order = [commit!=null && A.commitIdx.has(commit) ? A.commitIdx.get(commit) : 1e9, w, seq];
+    A.confirmed.set(path, {seg, order, commit});
+    if (w===A.writer && seq>=A.nextSeq) A.nextSeq = seq+1;
+    if (!A.synced && w===A.writer) seg.ops.forEach((_,i)=>A.seenEvents.add(`${w}:${seq}:${i}`));
+  }
+  A.pending = A.pending.filter(b=>!(b.state==='written' && A.confirmed.has(b.repoPath)));
+  A.lastSha = to; A.lastCommit = to.slice(0,7)+` (${(c.commits||[]).length} new commit(s))`;
+  if (!A.synced){ A.synced = true; ev(`initial sync done: ${A.confirmed.size} segment(s); next own seq ${A.nextSeq}`,'ev-ok'); }
+  rebuild(); pump();
+}
+
+/* ================= sign-in: device flow + diagnostics ================= */
+function authUrl(path){ const full = $('fAuth').value.replace(/\/$/,'') + path; const px = $('fProxy').value.trim(); return px ? px.replace(/\/$/,'') + '/' + full : full; }
+let deviceAbort = false;
+async function authPost(path, params, label){
+  const url = authUrl(path);
+  diag(`${label}: POST ${url} (form-encoded, Accept: application/json)`);
+  let r;
+  try { r = await fetch(url, {method:'POST', headers:{'Accept':'application/json','Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams(params).toString()}); }
+  catch(e){
+    diag(`${label}: BLOCKED/FAILED before a readable response. Browser error: ${e.name}: ${e.message}`);
+    try { await fetch(url, {method:'POST', mode:'no-cors', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams({client_id:params.client_id||''}).toString()});
+      diag(`${label}: no-cors probe reached the server (opaque response) => network OK, the block is CORS (server sent no Access-Control-Allow-Origin for origin "${location.origin}").`); }
+    catch(e2){ diag(`${label}: no-cors probe also failed (${e2.message}) => network/DNS/extension/proxy problem, not only CORS.`); }
+    throw new Error('blocked');
+  }
+  const hs = []; r.headers.forEach((v,k)=>{ if (/^access-control|content-type|x-github/i.test(k)) hs.push(`${k}: ${v}`); });
+  diag(`${label}: HTTP ${r.status}; readable headers: ${hs.join(' | ') || '(none exposed)'}`);
+  let j = {}; try { j = await r.json(); } catch { diag(`${label}: body was not JSON`); }
+  const safe = Object.fromEntries(Object.entries(j).map(([k,v])=>[k, /token|device_code/.test(k) ? '[redacted]' : v]));
+  diag(`${label}: body ${JSON.stringify(safe)}`);
+  return {r, j};
+}
+async function deviceSignIn(){
+  const cid = $('fClientId').value.trim();
+  if (!cid){ err('Enter the OAuth App client ID first (public value from your OAuth App page).'); return; }
+  deviceAbort = false; $('bDevice').disabled = true;
+  diag(`--- device flow start; page origin "${location.origin}", protocol ${location.protocol}, auth base ${$('fAuth').value}, proxy ${$('fProxy').value||'(none)'}; UA ${navigator.userAgent}`);
+  try {
+    const {r, j} = await authPost('/login/device/code', {client_id:cid, scope:$('fScope').value.trim()}, 'device/code');
+    if (!r.ok || !j.device_code){ err(`Device code request failed (${r.status}${j.error?': '+j.error:''}). See Sign-in diagnostics.`); return; }
+    $('devBox').style.display=''; $('devCode').textContent=j.user_code; $('devLink').textContent=j.verification_uri; $('devLink').href=j.verification_uri;
+    try { window.open(j.verification_uri, '_blank', 'noopener'); } catch {}
+    let interval = Math.max(1, +j.interval || 5), deadline = Date.now() + (+j.expires_in||900)*1000;
+    while (!deviceAbort && Date.now() < deadline){
+      $('devState').textContent = ` waiting for you to approve… (checking every ${interval}s)`;
+      await sleep(interval*1000); if (deviceAbort) break;
+      const t = await authPost('/login/oauth/access_token', {client_id:cid, device_code:j.device_code, grant_type:'urn:ietf:params:oauth:grant-type:device_code'}, 'access_token');
+      if (t.j.access_token){ setToken(t.j.access_token); diag(`device flow: SUCCESS, token received (not shown), scope "${t.j.scope||''}"`); await whoAmI(); break; }
+      if (t.j.error==='authorization_pending') continue;
+      if (t.j.error==='slow_down'){ interval = (+t.j.interval||interval+5); continue; }
+      err(`Sign-in stopped: ${t.j.error||t.r.status} ${t.j.error_description||''}`); break;
+    }
+  } catch(e){ if (e.message==='blocked') err('Sign-in request was blocked by the browser (most likely CORS). This is the expected result for a static page; copy the Sign-in diagnostics.'); else err('Sign-in error: '+e.message); }
+  finally { $('bDevice').disabled=false; $('devBox').style.display = A.token ? 'none' : $('devBox').style.display; $('devState').textContent=''; }
+}
+function setToken(t){ A.token=t; try{ sessionStorage.setItem(TOKEN_KEY, t); }catch{} renderStatus(); }
+async function whoAmI(){
+  try { const r = await fetch(api('/user'), {headers:hdr()}); trackRate(r);
+    const hs=[]; r.headers.forEach((v,k)=>{ if(/^access-control-allow-origin/i.test(k)) hs.push(`${k}: ${v}`); });
+    diag(`GET /user: HTTP ${r.status} ${hs.join(' ')}`);
+    if (!r.ok){ err(`Could not confirm sign-in (GET /user ${r.status}).`); return; }
+    const j = await r.json(); A.login = j.login; ev(`signed in as ${j.login}`,'ev-ok'); diag(`signed in as ${j.login}`); pump();
+  } catch(e){ diag(`GET /user failed: ${e.message}`); err('GET /user failed: '+e.message); }
+  renderStatus();
+}
+function signOut(){ A.token=null; A.login=null; deviceAbort=true; try{ sessionStorage.removeItem(TOKEN_KEY); }catch{} ev('signed out (token removed from this tab)'); renderStatus(); }
+async function sha256b64url(s){ const h = await crypto.subtle.digest('SHA-256', te.encode(s)); return btoa(String.fromCharCode(...new Uint8Array(h))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+async function webFlowDiag(){
+  const cid = $('fClientId').value.trim(); if (!cid){ err('Enter the client ID first.'); return; }
+  if (!crypto.subtle){ diag('web flow: crypto.subtle unavailable on this origin (PKCE needs a secure context; file:// may lack it)'); return; }
+  const rnd = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b=>b.toString(16).padStart(2,'0')).join('');
+  const state = rnd(16), verifier = rnd(32);
+  sessionStorage.setItem('atlasOAuthState', state); sessionStorage.setItem('atlasPkce', verifier);
+  const u = $('fAuth').value.replace(/\/$/,'') + '/login/oauth/authorize?' + new URLSearchParams({client_id:cid, scope:$('fScope').value, state, code_challenge:await sha256b64url(verifier), code_challenge_method:'S256'});
+  diag(`web flow (diagnostic): redirecting to authorize; GitHub will send you to the OAuth App's callback URL. The code->token exchange needs the client secret, so this page will NOT finish sign-in.`);
+  location.href = u;
+}
+function checkWebReturn(){
+  if (!Q.get('code')) return;
+  const ok = Q.get('state') && Q.get('state') === sessionStorage.getItem('atlasOAuthState');
+  diag(`web flow returned with a code (not shown); state ${ok?'matches':'DOES NOT match'}. Exchange not attempted: it needs the client secret (cannot be in a static page). Web flow therefore cannot complete without a backend/proxy.`);
+  sessionStorage.removeItem('atlasOAuthState'); sessionStorage.removeItem('atlasPkce');
+  const q = new URLSearchParams(location.search); q.delete('code'); q.delete('state'); history.replaceState(null,'', location.pathname + (q.toString()?'?'+q:''));
+}
+async function corsProbe(){
+  diag('--- CORS probe');
+  try { await authPost('/login/device/code', {client_id:$('fClientId').value.trim()||'probe'}, 'probe device/code'); } catch {}
+  try { const r = await fetch(api('/user'), {headers:{Accept:'application/vnd.github+json'}}); diag(`probe API (${A.api}): HTTP ${r.status}, ACAO ${r.headers.get('access-control-allow-origin')??'(not visible)'}`); }
+  catch(e){ diag(`probe API: failed ${e.message}`); }
+}
+
+/* ================= rendering ================= */
+function render(){
+  const v = A.view.v;
+  const ids = [...new Set(Object.keys(v).filter(k=>k.startsWith('items/')).map(k=>k.split('/')[1]))].sort();
+  $('items').innerHTML = ids.map(id=>`<tr><td>${esc(v[`items/${id}/name`]??id)} <span class="mut">${id}</span></td>
+    <td><input type="number" data-joy="${id}" value="${esc(v[`joys/${id}/value`]??0)}"> <button data-d="${id}" data-by="1">+1</button><button data-d="${id}" data-by="-1">−1</button></td>
+    <td>${(v[`items/${id}/notes`]||[]).map(n=>`<span class="note">${esc(n)}<button data-rm="${id}" data-v="${esc(n)}" title="remove">×</button></span>`).join('')}
+      <input type="text" size="12" placeholder="add note" data-add="${id}"></td></tr>`).join('');
+  $('altName').textContent = v['alts/g1/name']||'';
+  const opts = [...new Set(Object.keys(v).filter(k=>k.startsWith('alts/g1/opts/')).map(k=>k.split('/')[3]))].sort();
+  $('alts').innerHTML = opts.map(o=>`<tr><td><label><input type="radio" name="pick" data-pick="${o}" ${v['alts/g1/pick']===o?'checked':''}> ${esc(v[`alts/g1/opts/${o}/name`])}</label></td>
+    <td><label>pref <input type="number" data-pref="${o}" value="${esc(v[`alts/g1/opts/${o}/pref`]??0)}"></label></td>
+    <td><label><input type="checkbox" data-unav="${o}" ${v[`alts/g1/opts/${o}/unavail`]?'checked':''}> unavailable</label></td></tr>`).join('');
+  $('jreqLabel').textContent = v['items/i3/name']||'i3';
+  $('jreqSel').innerHTML = ids.filter(i=>i!=='i3').map(i=>`<option value="${i}" ${v['jreq/i3/value']===i?'selected':''}>${esc(v[`items/${i}/name`])}</option>`).join('');
+  $('dateIn').value = v['dates/start/value']||'';
+  $('revs').innerHTML = Object.keys(A.view.rev).sort().map(p=>{ const r=A.view.rev[p]; return `<tr><td><code>${esc(p)}</code></td><td>${esc(JSON.stringify(v[p]))}</td><td>${r.rev}</td><td>${esc(r.owner)}</td><td>${esc(r.last)}</td></tr>`; }).join('') || '<tr><td colspan=5 class="mut">no changes yet (seed values)</td></tr>';
+  renderStatus(); renderQueue();
+}
+function renderQueue(){
+  const q = A.pending.filter(b=>b.state!=='written');
+  $('qview').textContent = A.pending.map(b=>`${b.state.padEnd(8)} seq ${b.seq??'-'} ops ${b.ops.length}: ${b.ops.map(o=>o.op+' '+o.path).join(', ').slice(0,90)}`).join('\n') || '(empty)';
+  $('hdrQueue').textContent = `queue ${q.length}`;
+}
+function renderStatus(){
+  $('hdrWriter').textContent = 'writer ' + (A.writer||'?');
+  $('hdrUser').textContent = A.login ? 'signed in as ' + A.login : (A.token ? 'token present, user unknown' : 'not signed in');
+  const rows = [['Signed in as', A.login || (A.token?'(checking…)':'not signed in')], ['Writer / log folder', `${A.writer} → ${A.logRoot}/${A.writer}/`], ['Sync', A.running ? (A.synced?'running':'initial sync…') : 'stopped'],
+    ['Last poll', `${A.lastPoll} → ${A.lastPollResult}`], ['Rate limit remaining', A.rate], ['Queue length', A.pending.filter(b=>b.state!=='written').length], ['Next own seq', A.nextSeq],
+    ['Last commit', A.lastCommit], ['Segments applied', A.confirmed.size], ['Errors', A.errors.length ? A.errors.join('\n') : 'none']];
+  $('status').innerHTML = rows.map(([k,v])=>`<div>${esc(k)}</div><div class="${k==='Errors'&&A.errors.length?'err':''}" style="white-space:pre-wrap">${esc(v)}</div>`).join('');
+}
+
+/* ================= wiring ================= */
+function readSettings(){
+  const w = $('fWriter').value.trim();
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(w)){ err('Writer id must be 1-32 letters/digits/_/-'); return false; }
+  A.writer=w; A.repo=$('fRepo').value.trim(); A.api=$('fApi').value.trim().replace(/\/$/,''); A.logRoot=$('fLogRoot').value.trim().replace(/\/$/,'');
+  A.base=$('fBase').value.trim(); A.pollSec=Math.max(2, +$('fPoll').value||7); return true;
+}
+function start(){ if (!readSettings()) return; if (!A.running){ A.running=true; ev(`sync started as writer ${A.writer} on ${A.repo} via ${A.api}`); } poll(); pump(); renderStatus(); }
+function stop(){ A.running=false; clearTimeout(A.pollTimer); ev('sync stopped'); renderStatus(); }
+document.addEventListener('change', e=>{
+  const t=e.target, d=t.dataset; if (!A.view) return;
+  if (d.joy) propose([{op:'set', path:`joys/${d.joy}/value`, value:+t.value}]);
+  else if (d.pref) propose([{op:'set', path:`alts/g1/opts/${d.pref}/pref`, value:+t.value}]);
+  else if (d.unav) propose([{op:'set', path:`alts/g1/opts/${d.unav}/unavail`, value:t.checked}]);
+  else if (d.pick) propose([{op:'ref', path:'alts/g1/pick', target:d.pick}]);
+  else if (t.id==='jreqSel') propose([{op:'ref', path:'jreq/i3/value', target:t.value}]);
+  else if (t.id==='dateIn' && t.value) propose([{op:'set', path:'dates/start/value', value:t.value}]);
+  else if (d.add && t.value.trim()) propose([{op:'add', path:`items/${d.add}/notes`, value:t.value.trim()}]);
+  else if (t.id==='fWriter'){ const u=new URL(location.href); u.searchParams.set('writer', t.value.trim()); history.replaceState(null,'',u); }
+});
+document.addEventListener('click', e=>{
+  const d=e.target.dataset;
+  if (d.d) propose([{op:'delta', path:`joys/${d.d}/value`, by:+d.by}]);
+  else if (d.rm) propose([{op:'remove', path:`items/${d.rm}/notes`, value:d.v}]);
+});
+$('bStart').onclick=start; $('bStop').onclick=stop; $('bPollNow').onclick=()=>{ if (A.running){ clearTimeout(A.pollTimer); poll(); pump(); } };
+$('bEmpty').onclick=()=>propose([]);
+$('bRaw').onclick=()=>{ try { propose(JSON.parse($('rawOps').value)); } catch(e){ err('Raw batch is not valid JSON: '+e.message); } };
+$('bDevice').onclick=deviceSignIn; $('bCancel').onclick=()=>{ deviceAbort=true; diag('device flow cancelled by user'); };
+$('bSignOut').onclick=signOut; $('bWeb').onclick=webFlowDiag; $('bProbe').onclick=corsProbe;
+$('bCopyDiag').onclick=async()=>{ const t=$('diag').innerText; try{ await navigator.clipboard.writeText(t); ev('diagnostics copied'); }catch{ const ta=document.createElement('textarea'); ta.value=t; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); ev('diagnostics copied'); } };
+$('bDownload').onclick=()=>{
+  const snap = {writer:A.writer, repo:A.repo, lastCommit:A.lastSha, values:A.view.v, revisions:A.view.rev, segments:sortedConfirmed().map(c=>({path:[...A.confirmed].find(([k,v])=>v===c)[0], order:c.order, commit:c.commit})), pending:A.pending.filter(b=>b.state!=='written').map(b=>({seq:b.seq,ops:b.ops}))};
+  const blob = new Blob([encodeSnapshot(snap)], {type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`atlas-state-${A.writer}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+};
+// init
+$('fWriter').value = Q.get('writer')||'A'; $('fRepo').value = Q.get('repo')||'MatthewGRodriguez/atlas-sync-test';
+$('fApi').value = Q.get('api')||'https://api.github.com'; $('fAuth').value = Q.get('auth')||'https://github.com'; $('fProxy').value = Q.get('proxy')||'';
+$('fClientId').value = Q.get('client_id')||''; $('fScope').value = Q.get('scope')||'public_repo'; $('fPoll').value = Q.get('poll')||7;
+$('fLogRoot').value = Q.get('logroot')||'log'; $('fBase').value = Q.get('base')||'540e077df64c47e115a3bc91a653ecfa50d35238';
+readSettings();
+try { const t = sessionStorage.getItem(TOKEN_KEY); if (t){ A.token=t; whoAmI(); } } catch {}
+checkWebReturn();
+A.view = {v:clone(SEED), rev:{}}; render();
+diag(`page loaded: origin "${location.origin}", protocol ${location.protocol}, secure context ${window.isSecureContext}`);
+if (Q.get('autostart')==='1') start();
+</script></body></html>

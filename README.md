@@ -15,7 +15,9 @@ An *atlas* is the Exp7 data format: a compact binary snapshot plus an append-onl
 ## Layout
 
 - `atlas/` – atlas snapshot and log segments (synthetic only)
-- `clients/` – static HTML test clients (not built yet)
+- `clients/` – static HTML test client (`client.html`)
+- `tools/` – local GitHub mock + e2e test
+- `log/<writer>/` – log segments written by clients (synthetic)
 - `docs/` – research and protocol notes, see `docs/rest-sync-notes.md`
 
 ## License
