@@ -1,0 +1,12 @@
+# never commit credentials
+.env
+.env.*
+*.token
+*secret*
+*.pem
+*.key
+# local junk
+.DS_Store
+node_modules/
+*.log
+tmp/
