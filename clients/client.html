@@ -23,32 +23,37 @@ table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #eef0f4;
 .kv{display:grid;grid-template-columns:150px 1fr;gap:2px 8px}.kv div:nth-child(odd){color:var(--mut)}
 .err{color:var(--bad)}.mut{color:var(--mut)}code{background:#f1f3f7;padding:0 4px;border-radius:3px}
 input[type=password]{padding:3px 6px;border:1px solid var(--b);border-radius:5px}
-ol.steps{margin:6px 0;padding-left:20px}#authMsg{margin-top:6px}#authMsg.warn{color:#a15c00;font-weight:600}
+ol.steps{margin:6px 0;padding-left:20px}#authMsg{margin-top:6px}#authMsg.warn,.warn{color:#a15c00;font-weight:600}
+.share{font:12px ui-monospace,Menlo,monospace;background:#f1f3f7;padding:2px 6px;border-radius:4px}textarea{border:1px solid var(--b);border-radius:5px}
 </style></head><body>
 <header><h1>Atlas sync test</h1><span class="pill" id="hdrWriter">writer ?</span><span id="hdrUser" class="mut">not signed in</span><span id="hdrQueue" class="mut"></span></header>
 <main>
 <div>
 <section><h2>Setup</h2>
- <label>Writer id <input type="text" id="fWriter" size="6"></label>
- <label>Repo <input type="text" id="fRepo" size="32"></label>
+ <label>Writer id <input type="text" id="fWriter" size="14" placeholder="= your GitHub login"></label>
+ <label>My log repo name <input type="text" id="fRepoName" size="16"></label>
  <label>Poll every <input type="number" id="fPoll" min="2" max="300"> s</label><br>
  <label>API base <input type="url" id="fApi" size="28"></label>
  <label>Log root <input type="text" id="fLogRoot" size="10"></label>
- <label>Base commit <input type="text" id="fBase" size="12" title="compare starts from this commit (the repo's first commit)"></label>
- <div><button id="bStart" class="pri">Start sync</button> <button id="bStop">Stop</button> <span class="mut">Settings also accept URL params: ?writer=A&amp;api=…&amp;repo=…&amp;poll=7</span></div>
+ <div style="margin-top:6px"><b>Peers</b> <span class="mut">(other writers' public log repos, <code>owner/repo</code>, comma or newline separated; read without a token)</span><br>
+  <textarea id="fPeers" rows="2" cols="48" spellcheck="false" placeholder="alice/atlas-sync-log, bob/atlas-sync-log"></textarea></div>
+ <div><button id="bStart" class="pri">Start sync</button> <button id="bStop">Stop</button> <span class="mut">URL params: ?writer=…&amp;peers=a/atlas-sync-log,b/atlas-sync-log&amp;poll=10&amp;reponame=…&amp;api=…</span></div>
+ <div style="margin-top:6px">My repo (give this to the others): <span class="share" id="myRepo">sign in first</span> <button id="bCopyRepo">Copy</button> <button id="bCopyLink">Copy share link</button></div>
 </section>
 <section style="margin-top:12px"><h2>Sign in with GitHub (personal access token)</h2>
- <div><button id="bSignIn" class="pri">Sign in with GitHub</button> <span class="mut">opens GitHub's token page in this tab; after generating the token, use your browser's <b>Back</b> button to return here and paste it</span></div>
+ <div class="mut">Each person writes only to their <b>own</b> public repo <code>&lt;your-login&gt;/atlas-sync-log</code> and reads everyone else's without a token. Never hand your token to someone else, and never ask for theirs. A fine-grained token can only write to repos owned by the token's own account (being a collaborator does not help).</div>
+ <div style="margin-top:6px"><button id="bSignIn" class="pri">Sign in with GitHub</button> <label><input type="checkbox" id="fCreatePerm"> token may also create my repo (adds Administration: write)</label><br><span class="mut">opens GitHub's token page in this tab; after generating the token, use your browser's <b>Back</b> button to return here and paste it</span></div>
  <div id="returnNote" class="ok" style="display:none"></div>
  <ol class="steps">
-  <li>On the GitHub page, under <b>Repository access</b> pick <b>Only select repositories</b> → <code id="repoHint">MatthewGRodriguez/atlas-sync-test</code>.</li>
-  <li>Under <b>Permissions</b> confirm <b>Contents: Read and write</b> (prefilled).</li>
-  <li>Click <b>Generate token</b>, copy it, and paste it below.</li>
+  <li>Easiest: first create your repo with <b>Create my log repo</b> below (no token needed), then make the token.</li>
+  <li>On the token page, under <b>Repository access</b> pick <b>Only select repositories</b> → <code id="repoHint">&lt;your-login&gt;/atlas-sync-log</code> (or <b>All repositories</b> if you ticked the create option, since a repo that does not exist yet cannot be selected).</li>
+  <li>Under <b>Permissions</b> confirm <b>Contents: Read and write</b> (prefilled). Click <b>Generate token</b>, copy it, press Back, paste it below.</li>
  </ol>
  <label>Token <input type="password" id="fToken" size="34" autocomplete="off" spellcheck="false" placeholder="github_pat_…"></label>
  <button id="bConnect" class="pri">Connect</button> <button id="bSignOut">Sign out</button><br>
  <label><input type="checkbox" id="fRemember"> Remember for this tab</label>
  <div id="authMsg" class="mut"></div>
+ <div style="margin-top:6px"><button id="bCreateRepo">Create my log repo</button> <button id="bCheckRepo">Check my repo again</button> <span id="repoMsg" class="mut"></span></div>
  <div class="mut" style="margin-top:4px">The token stays in this tab's memory only (or sessionStorage if you tick "Remember for this tab"). It is never written to localStorage, the repo, the log, or the diagnostics. This is a pasted token: GitHub offers no sign-in for a static page without a backend.</div>
 </section>
 <section style="margin-top:12px"><h2>Plan / atlas (synthetic)</h2>
@@ -62,6 +67,7 @@ ol.steps{margin:6px 0;padding-left:20px}#authMsg{margin-top:6px}#authMsg.warn{co
 </div>
 <div>
 <section><h2>Status</h2><div class="kv" id="status"></div><div style="margin-top:6px"><button id="bPollNow">Poll now</button> <button id="bDownload">Download state (JSON)</button></div></section>
+<section style="margin-top:12px"><h2>Repos read</h2><div class="log" id="repoView" style="max-height:140px"></div></section>
 <section style="margin-top:12px"><h2>Write queue</h2><div class="log" id="qview" style="max-height:120px"></div></section>
 <section style="margin-top:12px"><h2>Revisions / owners per path</h2><table><thead><tr><th>Path</th><th>Value</th><th>Rev</th><th>Owner</th><th>Last (writer:seq)</th></tr></thead><tbody id="revs"></tbody></table></section>
 <section style="margin-top:12px"><h2>Sign-in diagnostics</h2><div class="mut">Records what happened in this browser. Contains no token. Copy it into your report if sign-in fails.</div>
@@ -91,8 +97,10 @@ const b64dec = s => Uint8Array.from(atob(s.replace(/\s/g,'')), c => c.charCodeAt
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const clone = o => JSON.parse(JSON.stringify(o));
 const pad = n => String(n).padStart(6,'0');
-const TOKEN_KEY = 'atlasSyncToken';
+const TOKEN_KEY = 'atlasSyncToken', PEERS_KEY = 'atlasSyncPeers';
 const MAX_OPS = 5000;
+const DEFAULT_REPO_NAME = 'atlas-sync-log';
+const REPO_RE = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
 
 /* ================= synthetic seed atlas (invented) ================= */
 const SEED = {
@@ -144,15 +152,18 @@ function applyBatch(S, seg){
   return {results, changed: results.filter(r=>r.changed).map(r=>r.changed)};
 }
 
-/* ================= app state ================= */
+/* ================= app state =================
+   Multi-repo design: every writer writes ONLY to its own public repo <login>/<repoName> (log/<writer>/<seq>.json)
+   and reads every repo in [own, ...peers] (anonymously if not signed in). There is no shared commit order, so
+   segments are merged in a deterministic order: [ts (writer clock, ms), writer id, seq, repo]. Last write wins. */
 const A = {
-  writer:'', repo:'', api:'', logRoot:'', base:'', pollSec:7,
-  token:null, login:null,
-  confirmed:new Map(),   // path -> {seg, order:[commitIdx, writer, seq], commit}
-  pending:[],            // local batches: {id, ops, seq?, state:'queued'|'writing'|'written', commit?}
-  commitIdx:new Map(), nextCommitIdx:0,
-  lastSha:null, etag:null, nextSeq:1, synced:false, running:false, pollTimer:null,
-  lastPoll:'-', lastPollResult:'-', rate:'-', rateReset:null, lastCommit:'-', errors:[], lastWriteAt:0,
+  writer:'', writerAuto:true, repoName:DEFAULT_REPO_NAME, api:'', logRoot:'', pollSec:10, anonMinPerRepo:72,
+  token:null, login:null, ownRepo:null, ownExists:null, ownPush:null,
+  peers:[], repos:new Map(),   // full -> {full, etag, sha, status, lastPoll, segs, err}
+  confirmed:new Map(),         // `${repo}:${path}` -> {seg, order:[ts, writer, seq, repo], repo, path}
+  pending:[],                  // local batches: {id, ops, seq?, ts?, state:'queued'|'writing'|'written', repoKey?}
+  nextSeq:1, lastTs:0, synced:false, running:false, pollTimer:null, backoff:1, polling:false,
+  lastPoll:'-', lastPollResult:'-', rate:'-', rateLimit:'-', rateReset:null, errors:[], lastWriteAt:0,
   seenEvents:new Set(), view:null, writing:false
 };
 
@@ -161,31 +172,32 @@ function err(text){ A.errors.unshift(`[${now()}] ${text}`); A.errors.length=Math
 function diag(text){ const d=document.createElement('div'); d.textContent=`[${new Date().toISOString()}] ${text}`; $('diag').append(d); }
 
 /* ================= replay ================= */
-function sortedConfirmed(){
-  return [...A.confirmed.values()].sort((a,b)=> a.order[0]-b.order[0] || (a.order[1]<b.order[1]?-1:a.order[1]>b.order[1]?1:0) || a.order[2]-b.order[2]);
+function cmpOrder(a,b){
+  const x=a.order, y=b.order;
+  return (x[0]-y[0]) || (x[1]<y[1]?-1:x[1]>y[1]?1:0) || (x[2]-y[2]) || (x[3]<y[3]?-1:x[3]>y[3]?1:0);
 }
+function sortedConfirmed(){ return [...A.confirmed.values()].sort(cmpOrder); }
 function rebuild(){
   const S = {v:clone(SEED), rev:{}};
   for (const c of sortedConfirmed()){
     const r = applyBatch(S, c.seg);
     for (const [i,res] of r.results.entries()){
-      const key = `${c.seg.writer}:${c.seg.seq}:${i}`;
+      const key = `${c.repo}:${c.seg.writer}:${c.seg.seq}:${i}`;
       if (A.seenEvents.has(key)) continue; A.seenEvents.add(key);
       if (c.seg.writer === A.writer) continue;
       const op = c.seg.ops[i];
       if (res.changed && res.changed.prevOwner === A.writer)
         ev(`CHANGED: ${res.changed.path} was ${JSON.stringify(res.changed.from)} (yours), now ${JSON.stringify(S.v[res.changed.path])} by ${c.seg.writer}:${c.seg.seq}`,'ev-changed');
-      else ev(`received ${c.seg.writer}:${c.seg.seq} ${op.op} ${op.path} -> ${res.status}${res.reason?' ('+res.reason+')':''}`);
+      else ev(`received ${c.seg.writer}:${c.seg.seq} (${c.repo}) ${op.op} ${op.path} -> ${res.status}${res.reason?' ('+res.reason+')':''}`);
     }
   }
-  for (const b of A.pending.filter(b=>!A.confirmed.has(b.repoPath))) applyBatch(S, {writer:A.writer, seq:b.seq??'pending', ops:b.ops});
+  for (const b of A.pending.filter(b=>!A.confirmed.has(b.repoKey))) applyBatch(S, {writer:A.writer, seq:b.seq??'pending', ops:b.ops});
   A.view = S; render();
 }
 
 /* ================= proposing ================= */
 function propose(ops){
   if (!Array.isArray(ops) || ops.length > MAX_OPS){ err(`Batch rejected: must have 0..${MAX_OPS} ops`); return; }
-  // local acceptance check against the current view
   const S = clone(A.view); const r = applyBatch(S, {writer:A.writer, seq:'local', ops});
   r.results.forEach((res,i)=>{ if (res.status!=='applied') ev(`local: ${ops[i].op} ${ops[i].path} -> ${res.status}${res.reason?' ('+res.reason+')':''}`, res.status==='rejected'?'ev-err':''); });
   A.pending.push({id:Math.random().toString(36).slice(2), ops, state:'queued'});
@@ -194,37 +206,41 @@ function propose(ops){
 function hdr(extra={}){ const h={Accept:'application/vnd.github+json'}; if (A.token) h.Authorization='Bearer '+A.token; return Object.assign(h, extra); }
 function api(path){ return A.api.replace(/\/$/,'') + path; }
 function repoPath(p){ return p.split('/').map(encodeURIComponent).join('/'); }
-function trackRate(r){ const v=r.headers.get('x-ratelimit-remaining'); if (v!=null) A.rate=v; const t=r.headers.get('x-ratelimit-reset'); if (t) A.rateReset=+t; }
+function trackRate(r){ const v=r.headers.get('x-ratelimit-remaining'); if (v!=null) A.rate=v; const l=r.headers.get('x-ratelimit-limit'); if (l!=null) A.rateLimit=l; const t=r.headers.get('x-ratelimit-reset'); if (t) A.rateReset=+t; }
+const NO_WRITE_HELP = () => `needs a fine-grained token made on the account that owns ${A.ownRepo}, with Repository access including ${A.ownRepo} and Contents: Read and write. Fine-grained tokens can only write to repos owned by the token's own account; being a collaborator does not help`;
 
 async function pump(){
   if (A.writing) return; A.writing = true;
   try {
     while (A.running){
       const b = A.pending.find(b=>b.state==='queued'); if (!b) break;
-      if (!A.token){ renderStatus(); break; }
+      if (!A.token || !A.ownRepo){ renderStatus(); break; }
+      if (A.ownExists===false){ renderStatus(); break; }
       if (!A.synced){ await sleep(500); continue; }
       let attempt = 0;
       while (A.running){
         const wait = A.lastWriteAt + 1000 - Date.now(); if (wait>0) await sleep(wait);
         if (b.seq == null) b.seq = A.nextSeq;
+        if (b.ts == null){ b.ts = Math.max(Date.now(), A.lastTs+1); A.lastTs = b.ts; }
         const path = `${A.logRoot}/${A.writer}/${pad(b.seq)}${SEGMENT_EXT}`;
-        const seg = {v:1, atlas:'demo', writer:A.writer, seq:b.seq, createdAt:new Date().toISOString(), ops:b.ops};
+        const seg = {v:2, atlas:'demo', writer:A.writer, seq:b.seq, ts:b.ts, createdAt:new Date(b.ts).toISOString(), ops:b.ops};
         b.state='writing'; renderQueue();
         let r, j={};
         try {
           A.lastWriteAt = Date.now();
-          r = await fetch(api(`/repos/${A.repo}/contents/${repoPath(path)}`), {method:'PUT', headers:hdr({'Content-Type':'application/json'}),
-            body: JSON.stringify({message:`atlas:demo writer:${A.writer} seq:${b.seq}-${b.seq}`, content:b64enc(encodeSegment(seg)), branch:'main'})});
+          // no "branch": the Contents API uses the default branch, and creates it on an empty repo
+          r = await fetch(api(`/repos/${A.ownRepo}/contents/${repoPath(path)}`), {method:'PUT', headers:hdr({'Content-Type':'application/json'}),
+            body: JSON.stringify({message:`atlas:demo writer:${A.writer} seq:${b.seq}-${b.seq}`, content:b64enc(encodeSegment(seg))})});
           trackRate(r); try { j = await r.json(); } catch {}
         } catch(e){ r = null; err(`Write failed (network/CORS): ${e.message}`); }
         if (r && (r.status===201 || r.status===200)){
-          b.state='written'; b.repoPath=path; b.commit=j.commit&&j.commit.sha; b.seg=seg; A.nextSeq=b.seq+1;
-          ev(`wrote ${A.writer}:${b.seq} (${b.ops.length} ops) commit ${String(b.commit).slice(0,7)}`,'ev-ok'); schedulePoll(300); break;
+          b.state='written'; b.repoKey=`${A.ownRepo}:${path}`; b.seg=seg; A.nextSeq=b.seq+1;
+          ev(`wrote ${A.writer}:${b.seq} (${b.ops.length} ops) to ${A.ownRepo} commit ${String(j.commit&&j.commit.sha).slice(0,7)}`,'ev-ok'); schedulePoll(300); break;
         }
         attempt++;
         if (r && r.status===422 && /sha/i.test(j.message||'')){ A.nextSeq = b.seq+1; b.seq = null; ev(`seq ${pad(A.nextSeq-1)} already exists, using next`); b.state='queued'; continue; }
-        if (r && (r.status===401)){ b.state='queued'; on401('a write'); return; }
-        if (r && (r.status===404 || (r.status===403 && /not accessible|permission/i.test(j.message||'')))){ err(`Write refused (${r.status}): the token cannot write to this repo (needs Contents: Read and write on ${A.repo}${A.login && A.login.toLowerCase()!==A.repo.split('/')[0].toLowerCase() ? `, and account ${A.login} must be a collaborator with write access` : ''}). Batch stays queued.`); b.state='queued'; renderQueue(); A.writing=false; return; }
+        if (r && r.status===401){ b.state='queued'; on401('a write'); return; }
+        if (r && (r.status===404 || (r.status===403 && /not accessible|permission/i.test(j.message||'')))){ err(`Write refused (${r.status}): this token cannot write to ${A.ownRepo} (${NO_WRITE_HELP()}). Batch stays queued.`); b.state='queued'; renderQueue(); A.writing=false; return; }
         let delay;
         const ra = r && r.headers.get('retry-after');
         if (r && (r.status===403||r.status===429)){
@@ -240,74 +256,120 @@ async function pump(){
   } finally { A.writing=false; renderQueue(); }
 }
 
-/* ================= polling ================= */
+/* ================= polling (every repo: own + peers) ================= */
+function repoList(){ const l=[]; if (A.ownRepo && A.ownExists!==false) l.push(A.ownRepo); for (const p of A.peers) if (!l.some(x=>x.toLowerCase()===p.toLowerCase())) l.push(p); return l; }
+function effectivePollSec(){
+  // anonymous: 60 requests/hour per IP, and anonymous 304s still count -> stretch the interval per repo
+  const n = Math.max(1, repoList().length);
+  const base = A.token ? A.pollSec : Math.max(A.pollSec, A.anonMinPerRepo*n);
+  return Math.min(600, base*A.backoff);
+}
 function schedulePoll(ms){ clearTimeout(A.pollTimer); if (A.running) A.pollTimer=setTimeout(poll, ms); }
+function repoState(full){ if (!A.repos.has(full)) A.repos.set(full, {full, etag:null, sha:null, status:'-', lastPoll:'-', segs:0, err:null}); return A.repos.get(full); }
 async function getJSON(path){
   const r = await fetch(api(path), {headers:hdr()}); trackRate(r);
-  if (r.status===401){ const e=new Error('401'); e.is401=true; throw e; }
-  if (!r.ok) throw new Error(`${r.status} on ${path.split('?')[0]}`); return r.json();
+  if (r.status===401 && A.token){ const e=new Error('401'); e.is401=true; throw e; }
+  if (!r.ok){ const e=new Error(`${r.status} on ${path.split('?')[0]}`); e.status=r.status; e.rl = r.headers.get('x-ratelimit-remaining')==='0'; throw e; }
+  return r.json();
 }
 async function poll(){
-  if (!A.running) return;
-  if (!A.token){ A.lastPollResult='waiting for sign-in'; renderStatus(); schedulePoll(1000); return; }
+  if (!A.running || A.polling) return; A.polling = true;
+  let trouble=false;
   try {
-    const r = await fetch(api(`/repos/${A.repo}/git/ref/heads/main`), {headers:hdr(A.etag?{'If-None-Match':A.etag}:{}) , cache:'no-store'});
-    trackRate(r); A.lastPoll = now(); A.lastPollResult = String(r.status);
-    if (r.status===304){ /* unchanged, free */ }
-    else if (r.ok){
-      A.etag = r.headers.get('etag'); const j = await r.json(); const sha = j.object.sha;
-      if (sha !== A.lastSha) await catchUp(A.lastSha || A.base, sha);
-    }
-    else if (r.status===401){ on401('a poll'); return; }
-    else throw new Error(`ref poll returned ${r.status}`);
-  } catch(e){ if (e.is401){ on401('a poll'); return; } A.lastPollResult='error'; err(`Poll failed: ${e.message}`); }
-  renderStatus(); schedulePoll(A.pollSec*1000);
+    const list = repoList();
+    if (!list.length){ A.lastPollResult = A.token ? 'no repos yet (create your repo or add peers)' : 'no peers to read (add peers or sign in)'; }
+    for (const full of list){ if (!A.running) break; if (!(await pollRepo(full))) trouble=true; }
+    A.lastPoll = now(); if (list.length) A.lastPollResult = list.map(f=>`${f}: ${repoState(f).status}`).join('; ');
+    const ownDone = !A.token || !A.ownRepo || A.ownExists===false || repoState(A.ownRepo).sha!==null || repoState(A.ownRepo).status==='empty';
+    if (!A.synced && ownDone && list.length){ A.synced = true; ev(`initial sync done: ${A.confirmed.size} segment(s) from ${list.length} repo(s); next own seq ${A.nextSeq}`,'ev-ok'); }
+    A.backoff = trouble ? Math.min(A.backoff*2, 32) : 1;
+  } catch(e){ if (e.is401){ A.polling=false; on401('a poll'); return; } A.lastPollResult='error'; err(`Poll failed: ${e.message}`); A.backoff=Math.min(A.backoff*2,32); }
+  finally { A.polling = false; }
+  renderStatus(); renderRepos(); pump(); schedulePoll(effectivePollSec()*1000);
 }
-async function catchUp(from, to){
-  const c = await getJSON(`/repos/${A.repo}/compare/${from}...${to}`);
-  for (const cm of c.commits||[]) if (!A.commitIdx.has(cm.sha)) A.commitIdx.set(cm.sha, A.nextCommitIdx++);
-  // map segment path -> commit via commit message "writer:X seq:N-M"
-  const byWS = new Map();
-  for (const cm of c.commits||[]){ const m=/writer:(\S+) seq:(\d+)/.exec(cm.commit.message||''); if (m) byWS.set(m[1]+':'+(+m[2]), cm.sha); }
-  const pre = A.logRoot.replace(/\/$/,'') + '/';
-  const files = (c.files||[]).filter(f=>f.filename.startsWith(pre) && f.status!=='removed').map(f=>f.filename).sort();
-  for (const path of files){
-    if (A.confirmed.has(path)) continue;
-    const m = path.slice(pre.length).match(/^([^/]+)\/(\d+)\.\w+$/); if (!m) continue;
-    const w = m[1], seq = +m[2];
-    const own = A.pending.find(b=>b.repoPath===path);
-    let seg = own && own.seg;
-    if (!seg){ const f = await getJSON(`/repos/${A.repo}/contents/${repoPath(path)}?ref=${to}`); seg = decodeSegment(b64dec(f.content)); }
-    const commit = byWS.get(w+':'+seq);
-    const order = [commit!=null && A.commitIdx.has(commit) ? A.commitIdx.get(commit) : 1e9, w, seq];
-    A.confirmed.set(path, {seg, order, commit});
-    if (w===A.writer && seq>=A.nextSeq) A.nextSeq = seq+1;
-    if (!A.synced && w===A.writer) seg.ops.forEach((_,i)=>A.seenEvents.add(`${w}:${seq}:${i}`));
+async function pollRepo(full){
+  const st = repoState(full); st.lastPoll = now();
+  let r;
+  try { r = await fetch(api(`/repos/${full}/git/ref/heads/main`), {headers:hdr(st.etag?{'If-None-Match':st.etag}:{}), cache:'no-store'}); }
+  catch(e){ st.status='network error'; st.err=e.message; err(`Poll of ${full} failed (network/CORS): ${e.message}`); return false; }
+  trackRate(r);
+  if (r.status===304){ st.status='304'; return true; }
+  if (r.status===401 && A.token){ const e=new Error('401'); e.is401=true; throw e; }
+  if (r.status===409 || (r.status===404 && st.exists)){ st.status='empty'; st.exists=true; st.etag=null; return true; }  // empty repo: no branch yet
+  if (r.status===404){ st.status='not found'; err(`${full}: not found (repo missing, private, or misspelled). Peers must be PUBLIC repos.`); return false; }
+  if (r.status===403 || r.status===429){ st.status=`${r.status} limited`; err(`${full}: GitHub limit hit (${r.status}); backing off. Anonymous reads are limited to 60/hour; sign in to raise it.`); return false; }
+  if (!r.ok){ st.status=String(r.status); err(`${full}: ref poll returned ${r.status}`); return false; }
+  st.exists=true;
+  const etag = r.headers.get('etag'); const j = await r.json(); const sha = j.object.sha;
+  if (sha !== st.sha){
+    try { await readTree(full, sha); }
+    catch(e){ if (e.is401) throw e; st.status = 'error'; err(`${full}: reading log failed: ${e.message}`); return false; }
+    st.sha = sha;
   }
-  A.pending = A.pending.filter(b=>!(b.state==='written' && A.confirmed.has(b.repoPath)));
-  A.lastSha = to; A.lastCommit = to.slice(0,7)+` (${(c.commits||[]).length} new commit(s))`;
-  if (!A.synced){ A.synced = true; ev(`initial sync done: ${A.confirmed.size} segment(s); next own seq ${A.nextSeq}`,'ev-ok'); }
-  rebuild(); pump();
+  st.etag = etag; st.status = '200'; return true;
+}
+async function readTree(full, sha){
+  const t = await getJSON(`/repos/${full}/git/trees/${sha}?recursive=1`);
+  if (t.truncated) err(`${full}: tree listing truncated by GitHub (too many files); some segments may be missing`);
+  const pre = A.logRoot.replace(/\/$/,'') + '/';
+  const files = (t.tree||[]).filter(e=>e.type==='blob' && e.path.startsWith(pre)).sort((a,b)=>a.path<b.path?-1:1);
+  let added=0;
+  for (const f of files){
+    const key = `${full}:${f.path}`; if (A.confirmed.has(key)) continue;
+    const m = f.path.slice(pre.length).match(/^([^/]+)\/(\d+)\.\w+$/); if (!m) continue;
+    const w = m[1], seq = +m[2];
+    const own = A.pending.find(b=>b.repoKey===key);
+    let seg = own && own.seg;
+    if (!seg){
+      const bl = await getJSON(`/repos/${full}/git/blobs/${f.sha}`);
+      try { seg = decodeSegment(b64dec(bl.content)); } catch(e){ err(`${full}: cannot decode ${f.path}: ${e.message}`); continue; }
+    }
+    if (!seg || seg.writer!==w || +seg.seq!==seq){ err(`${full}: ${f.path} ignored (writer/seq in file do not match its path)`); continue; }
+    const ts = Number.isFinite(+seg.ts) ? +seg.ts : (Date.parse(seg.createdAt)||0);
+    A.confirmed.set(key, {seg, order:[ts, w, seq, full], repo:full, path:f.path}); added++;
+    const mine = A.ownRepo && full.toLowerCase()===A.ownRepo.toLowerCase() && w===A.writer;
+    if (mine){ if (seq>=A.nextSeq) A.nextSeq = seq+1; if (ts>A.lastTs) A.lastTs = ts; }
+    if (mine && !A.synced) seg.ops.forEach((_,i)=>A.seenEvents.add(`${full}:${w}:${seq}:${i}`));
+  }
+  repoState(full).segs = [...A.confirmed.values()].filter(c=>c.repo===full).length;
+  A.pending = A.pending.filter(b=>!(b.state==='written' && A.confirmed.has(b.repoKey)));
+  if (added) rebuild();
 }
 
 /* ================= sign-in: pasted fine-grained PAT + diagnostics ================= */
-const PAT_URL = 'https://github.com/settings/personal-access-tokens/new?name=Atlas%20sync&description=Static%20page%20access&expires_in=30&contents=write';
+const PAT_BASE = 'https://github.com/settings/personal-access-tokens/new?name=Atlas%20sync&description=Static%20page%20access&expires_in=30&contents=write';
+const patUrl = () => PAT_BASE + ($('fCreatePerm').checked ? '&administration=write' : '');
+const newRepoUrl = () => `https://github.com/new?name=${encodeURIComponent(A.repoName)}&visibility=public&description=Atlas%20sync%20log`;
 function mask(t){ return t ? `[token hidden, ${t.length} chars, prefix ${t.startsWith('github_pat_')?'github_pat_':t.startsWith('ghp_')?'ghp_':'other'}]` : '(none)'; }
 function authMsg(text, cls='mut'){ $('authMsg').className=cls; $('authMsg').textContent=text; }
+function repoMsg(text, cls='mut'){ $('repoMsg').className=cls; $('repoMsg').textContent=text; }
 const PENDING_KEY = 'atlasSyncSignInPending';
-const SETTING_IDS = ['fWriter','fRepo','fApi','fPoll','fLogRoot','fBase'];
+const SETTING_IDS = ['fWriter','fRepoName','fApi','fPoll','fLogRoot','fPeers'];
+function savePending(kind){
+  // Same-tab navigation: persist only non-secret UI state (never the token) in sessionStorage.
+  try { const st={at:Date.now(), kind, remember:$('fRemember').checked, createPerm:$('fCreatePerm').checked, settings:{}}; SETTING_IDS.forEach(id=>st.settings[id]=$(id).value); sessionStorage.setItem(PENDING_KEY, JSON.stringify(st)); } catch {}
+}
 function openTokenPage(){
-  // Same-tab navigation: persist only non-secret pre-sign-in UI state (no token exists yet) in sessionStorage.
-  try { const st={at:Date.now(), remember:$('fRemember').checked, settings:{}}; SETTING_IDS.forEach(id=>st.settings[id]=$(id).value); sessionStorage.setItem(PENDING_KEY, JSON.stringify(st)); } catch {}
-  diag('navigating this tab to GitHub fine-grained token page (use Back to return)');
-  location.assign(PAT_URL);
+  savePending('token'); const u = patUrl();
+  diag(`navigating this tab to GitHub fine-grained token page${$('fCreatePerm').checked?' (with Administration: write for repo creation)':''} (use Back to return)`);
+  location.assign(u);
+}
+function openNewRepoPage(){
+  savePending('newrepo');
+  diag('navigating this tab to github.com/new prefilled (name, public, description); use Back to return');
+  location.assign(newRepoUrl());
 }
 function restorePending(fromBfcache){
   let st=null; try { st = JSON.parse(sessionStorage.getItem(PENDING_KEY)||'null'); } catch {}
   if (!st) return false;
-  if (!fromBfcache){ SETTING_IDS.forEach(id=>{ if (st.settings && st.settings[id]!=null) $(id).value=st.settings[id]; }); if (st.remember) $('fRemember').checked=true; }
-  if (!A.token){ $('returnNote').textContent='Back from GitHub: paste the token you generated into the Token field below and click Connect.'; $('returnNote').style.display=''; $('fToken').focus(); }
-  diag(`returned from GitHub token page (${fromBfcache?'bfcache':'reload'}); pre-sign-in state restored`);
+  if (!fromBfcache){ SETTING_IDS.forEach(id=>{ if (st.settings && st.settings[id]!=null) $(id).value=st.settings[id]; }); if (st.remember) $('fRemember').checked=true; if (st.createPerm) $('fCreatePerm').checked=true; }
+  const n=$('returnNote');
+  if (st.kind==='newrepo'){
+    n.textContent = A.token ? 'Back from GitHub: checking whether your repo now exists…' : 'Back from GitHub: if you created the repo, now sign in (or paste your token) and Connect; the page will find the repo.';
+    n.style.display='';
+    if (A.token) checkOwnRepo(true).then(ok=>{ if (ok) clearPending(); });
+  } else if (!A.token){ n.textContent='Back from GitHub: paste the token you generated into the Token field below and click Connect.'; n.style.display=''; $('fToken').focus(); }
+  diag(`returned from GitHub ${st.kind==='newrepo'?'new-repo':'token'} page (${fromBfcache?'bfcache':'reload'}); pre-navigation state restored`);
   return true;
 }
 function clearPending(){ try{ sessionStorage.removeItem(PENDING_KEY); }catch{} const n=$('returnNote'); if (n){ n.style.display='none'; n.textContent=''; } }
@@ -324,40 +386,73 @@ async function connect(tokenArg, fromStorage=false){
   if (!token){ authMsg('Paste a token first.', 'err'); return false; }
   if (/\s/.test(token)){ authMsg('That does not look like a token (contains spaces).', 'err'); return false; }
   $('bConnect').disabled = true; authMsg('Checking token…');
-  diag(`--- connect: token ${mask(token)}, API ${A.api}, repo ${A.repo}${fromStorage?' (restored from sessionStorage)':''}`);
+  diag(`--- connect: token ${mask(token)}, API ${A.api}, my repo name ${A.repoName}${fromStorage?' (restored from sessionStorage)':''}`);
   try {
     const u = await authGet('/user', token, 'GET /user');
     if (u.r.status===401){ fail('GitHub rejected this token (401): it is wrong, expired, or revoked.'); return false; }
     if (!u.r.ok || !u.j.login){ fail(`Could not check the token (GET /user returned ${u.r.status}).`); return false; }
-    const login=u.j.login, owner=A.repo.split('/')[0], otherAcct = login.toLowerCase()!==owner.toLowerCase();
-    const acctNote = otherAcct ? `Token belongs to GitHub account "${login}", not the repo owner "${owner}". A public repo is readable by any token, but to write, "${login}" must be added as a collaborator with write access to ${A.repo} (and accept the invite), or the repo must be owned by the signed-in account.` : '';
-    diag(`GET /user: signed-in login "${login}"; repo owner "${owner}"${otherAcct?' - DIFFERENT ACCOUNT (must be a collaborator with write access)':' (same account)'}`);
-    const rp = await authGet(`/repos/${A.repo}`, token, `GET /repos/${A.repo}`);
-    if (rp.r.status===401){ fail('GitHub rejected this token (401) on the repo check.'); return false; }
-    if (rp.r.status===404){ fail(`Token works (user ${login}) but cannot see ${A.repo}. Edit the token: Repository access → Only select repositories → ${A.repo}.${otherAcct?' '+acctNote:''}`); return false; }
-    if (!rp.r.ok){ fail(`Repo check failed (HTTP ${rp.r.status}).`); return false; }
-    const perms = rp.j.permissions;
-    diag(`GET /repos/${A.repo}: permissions ${perms && typeof perms==='object' ? Object.entries(perms).map(([k,v])=>k+'='+v).join(', ') : '(not present)'}`);
-    A.token = token; A.login = login; $('fToken').value = '';
+    const login = u.j.login;
+    A.token = token; A.login = login; A.ownRepo = `${login}/${A.repoName}`; $('fToken').value = '';
+    if (A.writerAuto || !$('fWriter').value.trim()){ A.writer = login; $('fWriter').value = login; A.writerAuto = true; }
+    diag(`GET /user: signed in as "${login}"; my log repo = ${A.ownRepo} (the token's own account; it only writes there)`);
     try { if ($('fRemember').checked) sessionStorage.setItem(TOKEN_KEY, token); else sessionStorage.removeItem(TOKEN_KEY); } catch {}
-    let note, cls='ev-ok';
-    if (perms && perms.push===true) note='write access confirmed';
-    else if (perms){ note=`WARNING: GitHub reports no write access (permissions.push=${perms.push}); connected anyway, writes will be attempted and the first refused write will say so`; cls='warn'; }
-    else note='write access not reported by GitHub; it will be confirmed on first write';
-    authMsg(`Signed in as ${login}; ${A.repo}: ${note}.${acctNote?' '+acctNote:''}`, cls); ev(`signed in as ${login}`,'ev-ok');
-    if (cls==='warn') ev(`warning: no write access reported for ${login} on ${A.repo}${otherAcct?' (different account from owner '+owner+')':''}`,'ev-err');
-    clearPending(); diag(`connect: OK as ${login}${cls==='warn'?' WITH WARNING (no push permission reported)':''}; stored in ${$('fRemember').checked?'memory + sessionStorage':'memory only'}`);
-    renderStatus(); pump(); return true;
-  } catch(e){ fail(`Could not reach GitHub API: ${e.message}. See Sign-in diagnostics.`); return false; }
+    const note = await checkOwnRepo(false);
+    authMsg(`Signed in as ${login}; my repo ${A.ownRepo}: ${note.text}`, note.cls); ev(`signed in as ${login}`,'ev-ok');
+    if (note.cls==='warn') ev(`warning: ${note.text}`,'ev-err');
+    clearPending(); diag(`connect: OK as ${login}${note.cls==='warn'?' WITH WARNING':''}; stored in ${$('fRemember').checked?'memory + sessionStorage':'memory only'}`);
+    renderStatus(); if (A.running) schedulePoll(50); pump(); return true;
+  } catch(e){ A.token=null; A.login=null; A.ownRepo=null; fail(`Could not reach GitHub API: ${e.message}. See Sign-in diagnostics.`); return false; }
   finally { $('bConnect').disabled = false; renderStatus(); }
   function fail(msg){ authMsg(msg, 'err'); err(msg); diag('connect: FAILED - '+msg); if (fromStorage) try{ sessionStorage.removeItem(TOKEN_KEY); }catch{} }
 }
+// Verify <login>/<repoName> exists and is writable. Returns {text, cls}; also used after returning from github.com/new.
+async function checkOwnRepo(fromReturn){
+  if (!A.token || !A.ownRepo){ repoMsg('Sign in first.', 'err'); return {text:'not signed in', cls:'err'}; }
+  const rp = await authGet(`/repos/${A.ownRepo}`, A.token, `GET /repos/${A.ownRepo}`);
+  if (rp.r.status===401){ on401('the repo check'); return {text:'401', cls:'err'}; }
+  if (rp.r.status===404){
+    A.ownExists=false; A.ownPush=null; repoMsg(`${A.ownRepo} does not exist yet: click "Create my log repo".`, 'warn');
+    if (fromReturn) ev(`${A.ownRepo} still not found; create it on GitHub (public) and press "Check my repo again"`,'ev-err');
+    renderShare(); return {text:'does not exist yet. Click "Create my log repo" (you can still read peers).', cls:'warn'};
+  }
+  if (!rp.r.ok){ repoMsg(`Repo check failed (HTTP ${rp.r.status}).`, 'err'); return {text:`repo check failed (HTTP ${rp.r.status})`, cls:'err'}; }
+  const was = A.ownExists; A.ownExists=true;
+  const perms = rp.j.permissions;
+  diag(`GET /repos/${A.ownRepo}: private=${rp.j.private}, permissions ${perms && typeof perms==='object' ? Object.entries(perms).map(([k,v])=>k+'='+v).join(', ') : '(not present)'}`);
+  let text, cls='ev-ok';
+  if (rp.j.private){ text=`exists but is PRIVATE; peers cannot read it without a token. Make it public (Settings → General → Danger Zone → Change visibility).`; cls='warn'; }
+  else if (perms && perms.push===true) text='exists, public, write access confirmed.';
+  else if (perms){ text=`WARNING: GitHub reports no write access (permissions.push=${perms.push}); connected anyway, writes will be attempted and the first refused write will say so. Check the token: Repository access must include ${A.ownRepo}, Contents: Read and write.`; cls='warn'; }
+  else text='exists; write access not reported by GitHub, it will be confirmed on the first write.';
+  A.ownPush = perms ? perms.push : null;
+  repoMsg(`${A.ownRepo}: ${text}`, cls==='warn'?'warn':'mut'); renderShare();
+  if (was===false || fromReturn){ ev(`found my repo ${A.ownRepo}`,'ev-ok'); if (A.running) schedulePoll(50); pump(); }
+  return {text, cls};
+}
+async function createRepo(){
+  if (!readSettings()) return;
+  if (!A.token){ diag('create repo: not signed in -> prefilled github.com/new page'); return openNewRepoPage(); }
+  const pre = await checkOwnRepo(false);
+  if (A.ownExists){ repoMsg(`${A.ownRepo} already exists; using it. ${pre.text}`, pre.cls==='warn'?'warn':'mut'); ev(`my repo ${A.ownRepo} already exists; using it`,'ev-ok'); return; }
+  let r, j={};
+  try { r = await fetch(api('/user/repos'), {method:'POST', headers:hdr({'Content-Type':'application/json'}),
+    body: JSON.stringify({name:A.repoName, private:false, auto_init:true, description:'Atlas sync log (synthetic test data only)'})}); trackRate(r); try { j = await r.json(); } catch {} }
+  catch(e){ diag(`create repo: POST /user/repos failed before a response (${e.message})`); r=null; }
+  diag(`create repo: POST ${api('/user/repos')} -> ${r?'HTTP '+r.status:'no response'}${j.message?' ('+j.message+')':''}`);
+  if (r && r.status===201){ ev(`created ${j.full_name||A.ownRepo} (public)`,'ev-ok'); await checkOwnRepo(true); return; }
+  if (r && r.status===422 && /exist/i.test(JSON.stringify(j))){ await checkOwnRepo(true); return; }
+  if (r && r.status===401){ on401('repo creation'); return; }
+  // 403/404: the token lacks Administration: write (or repo creation is not allowed for it) -> GitHub's own prefilled page
+  repoMsg(`This token cannot create repos (HTTP ${r?r.status:'-'}); opening GitHub's prefilled "new repository" page instead.`, 'warn');
+  ev(`token cannot create repos (HTTP ${r?r.status:'-'}); using github.com/new instead`);
+  openNewRepoPage();
+}
 function signOut(reason){
-  A.token=null; A.login=null; $('fToken').value='';
+  A.token=null; A.login=null; A.ownRepo=null; A.ownExists=null; A.ownPush=null; $('fToken').value='';
   try{ sessionStorage.removeItem(TOKEN_KEY); }catch{}
   if (A.running) stop();
   const msg = reason || 'Signed out: token removed from this tab (memory and sessionStorage); polling stopped.';
-  authMsg(msg, reason?'err':'mut'); ev(msg, reason?'ev-err':''); diag('sign-out: '+msg); renderStatus();
+  authMsg(msg, reason?'err':'mut'); ev(msg, reason?'ev-err':''); diag('sign-out: '+msg); renderShare(); renderStatus();
 }
 function on401(where){ signOut(`Signed out: GitHub returned 401 on ${where}; the token expired or was revoked. Create a new token and connect again.`); }
 async function apiProbe(){
@@ -390,23 +485,43 @@ function renderQueue(){
   $('qview').textContent = A.pending.map(b=>`${b.state.padEnd(8)} seq ${b.seq??'-'} ops ${b.ops.length}: ${b.ops.map(o=>o.op+' '+o.path).join(', ').slice(0,90)}`).join('\n') || '(empty)';
   $('hdrQueue').textContent = `queue ${q.length}`;
 }
+function renderRepos(){
+  const l = repoList();
+  $('repoView').textContent = l.map(f=>{ const s=repoState(f); return `${f===A.ownRepo?'(mine) ':''}${f}: ${s.status}, ${s.segs} seg, polled ${s.lastPoll}`; }).join('\n') || '(none)';
+}
+function renderShare(){
+  $('myRepo').textContent = A.ownRepo ? A.ownRepo + (A.ownExists===false ? ' (not created yet)' : '') : 'sign in first';
+  $('repoHint').textContent = A.ownRepo || `<your-login>/${A.repoName}`;
+}
+function shareLink(){ const u=new URL(location.href); ['autostart','api'].forEach(k=>u.searchParams.delete(k)); u.searchParams.delete('writer'); const ps=[A.ownRepo,...A.peers].filter(Boolean); u.searchParams.set('peers', [...new Set(ps)].join(',')); return u.toString(); }
 function renderStatus(){
   $('hdrWriter').textContent = 'writer ' + (A.writer||'?');
-  $('hdrUser').textContent = A.login ? 'signed in as ' + A.login : (A.token ? 'checking token…' : 'not signed in');
-  const rows = [['Signed in as', A.login || (A.token?'(checking…)':'not signed in')], ['Writer / log folder', `${A.writer} → ${A.logRoot}/${A.writer}/`], ['Sync', A.running ? (A.synced?'running':'initial sync…') : 'stopped'],
-    ['Last poll', `${A.lastPoll} → ${A.lastPollResult}`], ['Rate limit remaining', A.rate], ['Queue length', A.pending.filter(b=>b.state!=='written').length], ['Next own seq', A.nextSeq],
-    ['Last commit', A.lastCommit], ['Segments applied', A.confirmed.size], ['Errors', A.errors.length ? A.errors.join('\n') : 'none']];
+  $('hdrUser').textContent = A.login ? 'signed in as ' + A.login : (A.token ? 'checking token…' : 'not signed in (read-only)');
+  const rows = [['Signed in as', A.login || (A.token?'(checking…)':'not signed in: reading peers anonymously')], ['My repo (writes)', A.ownRepo ? `${A.ownRepo}${A.ownExists===false?' (does not exist yet)':''}` : '-'],
+    ['Writer / log folder', `${A.writer||'?'} → ${A.logRoot}/${A.writer||'?'}/`], ['Peers (reads)', A.peers.join(', ')||'none'], ['Sync', A.running ? (A.synced?'running':'initial sync…') : 'stopped'],
+    ['Poll interval', `${effectivePollSec()} s effective (setting ${A.pollSec} s${A.token?'':`, anonymous floor ${A.anonMinPerRepo} s × repos`}${A.backoff>1?`, backoff ×${A.backoff}`:''})`],
+    ['Last poll', `${A.lastPoll} → ${A.lastPollResult}`], ['Rate limit remaining', `${A.rate}${A.rateLimit!=='-'?' / '+A.rateLimit:''}`], ['Queue length', A.pending.filter(b=>b.state!=='written').length], ['Next own seq', A.nextSeq],
+    ['Segments applied', A.confirmed.size], ['Errors', A.errors.length ? A.errors.join('\n') : 'none']];
   $('status').innerHTML = rows.map(([k,v])=>`<div>${esc(k)}</div><div class="${k==='Errors'&&A.errors.length?'err':''}" style="white-space:pre-wrap">${esc(v)}</div>`).join('');
 }
 
 /* ================= wiring ================= */
+function parsePeers(s){ return [...new Set(String(s||'').split(/[\s,]+/).map(x=>x.trim().replace(/^https:\/\/github\.com\//,'').replace(/\.git$/,'').replace(/\/$/,'')).filter(Boolean))]; }
 function readSettings(){
   const w = $('fWriter').value.trim();
-  if (!/^[A-Za-z0-9_-]{1,32}$/.test(w)){ err('Writer id must be 1-32 letters/digits/_/-'); return false; }
-  A.writer=w; A.repo=$('fRepo').value.trim(); A.api=$('fApi').value.trim().replace(/\/$/,''); A.logRoot=$('fLogRoot').value.trim().replace(/\/$/,'');
-  A.base=$('fBase').value.trim(); A.pollSec=Math.max(2, +$('fPoll').value||7); return true;
+  if (w && !/^[A-Za-z0-9_-]{1,39}$/.test(w)){ err('Writer id must be 1-39 letters/digits/_/-'); return false; }
+  A.writer = w || A.login || ''; A.writerAuto = !w || w===A.login;
+  const rn = $('fRepoName').value.trim() || DEFAULT_REPO_NAME;
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(rn)){ err('Repo name: letters, digits, . _ - only'); return false; }
+  if (rn!==A.repoName){ A.repoName = rn; if (A.login){ A.ownRepo = `${A.login}/${rn}`; A.ownExists=null; } }
+  const peers = parsePeers($('fPeers').value), bad = peers.filter(p=>!REPO_RE.test(p));
+  if (bad.length){ err(`Peer entries must look like owner/repo: ${bad.join(', ')}`); return false; }
+  A.peers = peers; try { sessionStorage.setItem(PEERS_KEY, peers.join(',')); } catch {}
+  const u=new URL(location.href); if (peers.length) u.searchParams.set('peers', peers.join(',')); else u.searchParams.delete('peers'); history.replaceState(history.state,'',u);
+  A.api=$('fApi').value.trim().replace(/\/$/,''); A.logRoot=$('fLogRoot').value.trim().replace(/\/$/,'');
+  A.pollSec=Math.max(2, +$('fPoll').value||10); renderShare(); return true;
 }
-function start(){ if (!readSettings()) return; if (!A.running){ A.running=true; ev(`sync started as writer ${A.writer} on ${A.repo} via ${A.api}`); } poll(); pump(); renderStatus(); }
+function start(){ if (!readSettings()) return; if (!A.running){ A.running=true; ev(`sync started as writer ${A.writer||'(read-only)'}; writes to ${A.ownRepo||'(none, not signed in)'}; reads ${repoList().join(', ')||'(nothing yet)'} via ${A.api}`); } poll(); pump(); renderStatus(); }
 function stop(){ A.running=false; clearTimeout(A.pollTimer); ev('sync stopped'); renderStatus(); }
 document.addEventListener('change', e=>{
   const t=e.target, d=t.dataset; if (!A.view) return;
@@ -417,34 +532,45 @@ document.addEventListener('change', e=>{
   else if (t.id==='jreqSel') propose([{op:'ref', path:'jreq/i3/value', target:t.value}]);
   else if (t.id==='dateIn' && t.value) propose([{op:'set', path:'dates/start/value', value:t.value}]);
   else if (d.add && t.value.trim()) propose([{op:'add', path:`items/${d.add}/notes`, value:t.value.trim()}]);
-  else if (t.id==='fWriter'){ const u=new URL(location.href); u.searchParams.set('writer', t.value.trim()); history.replaceState(null,'',u); }
+  else if (t.id==='fWriter'){ const u=new URL(location.href); if (t.value.trim()) u.searchParams.set('writer', t.value.trim()); else u.searchParams.delete('writer'); history.replaceState(history.state,'',u); readSettings(); }
+  else if (t.id==='fPeers' || t.id==='fRepoName' || t.id==='fPoll'){ if (readSettings() && A.running) schedulePoll(50); }
 });
 document.addEventListener('click', e=>{
   const d=e.target.dataset;
   if (d.d) propose([{op:'delta', path:`joys/${d.d}/value`, by:+d.by}]);
   else if (d.rm) propose([{op:'remove', path:`items/${d.rm}/notes`, value:d.v}]);
 });
-$('bStart').onclick=start; $('bStop').onclick=stop; $('bPollNow').onclick=()=>{ if (A.running){ clearTimeout(A.pollTimer); poll(); pump(); } };
+async function copyText(t, what){ try{ await navigator.clipboard.writeText(t); }catch{ const ta=document.createElement('textarea'); ta.value=t; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); } ev(`${what} copied`); }
+$('bStart').onclick=start; $('bStop').onclick=stop; $('bPollNow').onclick=()=>{ if (A.running){ A.backoff=1; clearTimeout(A.pollTimer); poll(); pump(); } };
 $('bEmpty').onclick=()=>propose([]);
 $('bRaw').onclick=()=>{ try { propose(JSON.parse($('rawOps').value)); } catch(e){ err('Raw batch is not valid JSON: '+e.message); } };
 $('bSignIn').onclick=openTokenPage; $('bConnect').onclick=()=>connect(); $('fToken').addEventListener('keydown', e=>{ if (e.key==='Enter') connect(); });
 $('bSignOut').onclick=()=>signOut(); $('bProbe').onclick=apiProbe;
+$('bCreateRepo').onclick=createRepo; $('bCheckRepo').onclick=async()=>{ if (!readSettings()) return; const r = await checkOwnRepo(true); if (A.ownExists) clearPending(); return r; };
+$('bCopyRepo').onclick=()=>{ if (A.ownRepo) copyText(A.ownRepo, 'repo name'); };
+$('bCopyLink').onclick=()=>copyText(shareLink(), 'share link');
 $('fRemember').onchange=()=>{ try{ if (!$('fRemember').checked) sessionStorage.removeItem(TOKEN_KEY); else if (A.token) sessionStorage.setItem(TOKEN_KEY, A.token); }catch{} };
-$('bCopyDiag').onclick=async()=>{ const t=$('diag').innerText; try{ await navigator.clipboard.writeText(t); ev('diagnostics copied'); }catch{ const ta=document.createElement('textarea'); ta.value=t; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); ev('diagnostics copied'); } };
+$('bCopyDiag').onclick=()=>copyText($('diag').innerText, 'diagnostics');
 $('bDownload').onclick=()=>{
-  const snap = {writer:A.writer, repo:A.repo, lastCommit:A.lastSha, values:A.view.v, revisions:A.view.rev, segments:sortedConfirmed().map(c=>({path:[...A.confirmed].find(([k,v])=>v===c)[0], order:c.order, commit:c.commit})), pending:A.pending.filter(b=>b.state!=='written').map(b=>({seq:b.seq,ops:b.ops}))};
-  const blob = new Blob([encodeSnapshot(snap)], {type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`atlas-state-${A.writer}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  const snap = {writer:A.writer, ownRepo:A.ownRepo, peers:A.peers, heads:Object.fromEntries([...A.repos].map(([k,v])=>[k,v.sha])), values:A.view.v, revisions:A.view.rev,
+    segments:sortedConfirmed().map(c=>({repo:c.repo, path:c.path, order:c.order})), pending:A.pending.filter(b=>b.state!=='written').map(b=>({seq:b.seq,ops:b.ops}))};
+  const blob = new Blob([encodeSnapshot(snap)], {type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`atlas-state-${A.writer||'reader'}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
 };
 // init
-$('fWriter').value = Q.get('writer')||'A'; $('fRepo').value = Q.get('repo')||'MatthewGRodriguez/atlas-sync-test';
-$('fApi').value = Q.get('api')||'https://api.github.com'; $('fPoll').value = Q.get('poll')||7;
-$('fLogRoot').value = Q.get('logroot')||'log'; $('fBase').value = Q.get('base')||'540e077df64c47e115a3bc91a653ecfa50d35238';
+$('fWriter').value = Q.get('writer')||''; $('fRepoName').value = Q.get('reponame')||DEFAULT_REPO_NAME;
+$('fApi').value = Q.get('api')||'https://api.github.com'; $('fPoll').value = Q.get('poll')||10;
+$('fLogRoot').value = Q.get('logroot')||'log';
+{ let p = Q.get('peers'); if (p==null) try { p = sessionStorage.getItem(PEERS_KEY); } catch {} $('fPeers').value = parsePeers(p).join('\n'); }
+if (Q.get('anonmin')!=null) A.anonMinPerRepo = Math.max(0, +Q.get('anonmin')||0);
 restorePending(false);
 readSettings();
-$('repoHint').textContent = A.repo;
-try { const t = sessionStorage.getItem(TOKEN_KEY); if (t){ $('fRemember').checked = true; connect(t, true); } } catch {}
 A.view = {v:clone(SEED), rev:{}}; render();
 diag(`page loaded: origin "${location.origin}", protocol ${location.protocol}, secure context ${window.isSecureContext}`);
-if (Q.get('autostart')==='1') start();
+(async()=>{
+  try { const t = sessionStorage.getItem(TOKEN_KEY); if (t){ $('fRemember').checked = true; await connect(t, true); } } catch {}
+  let st=null; try { st = JSON.parse(sessionStorage.getItem(PENDING_KEY)||'null'); } catch {}
+  if (st && st.kind==='newrepo' && A.token){ await checkOwnRepo(true); if (A.ownExists) clearPending(); }
+  if (Q.get('autostart')==='1') start();
+})();
 window.addEventListener('pageshow', e=>{ if (e.persisted) restorePending(true); });
 </script></body></html>

@@ -1,70 +1,67 @@
-# Test runbook: two clients, real GitHub (Matthew's Mac)
+# Test runbook: two writers, two real GitHub accounts
 
-**Never paste a token into chat, a file, or a commit.** The page never shows the token; the diagnostics box masks it and is safe to copy.
+**You need two real GitHub accounts:** Matthew's and a second tester's. Each person uses a token from **their own** account only. Never send a token to anyone, never paste one into chat, a file, or a commit. The page never shows the token; the diagnostics box masks it and is safe to copy.
 
-**How sign-in works:** you create a fine-grained personal access token on GitHub and paste it into the page. This is a pasted token, not an OAuth sign-in: GitHub offers no sign-in for a static page without a backend, and we use no proxy. Everything is inside `clients/client.html`.
+**Why one repo each:** a fine-grained token can only write to repos owned by the token's own account. Adding the other person as a collaborator does **not** change that (earlier docs said it would; that was wrong). So each person writes to `<their-login>/atlas-sync-log` and reads the other person's repo, which is public and needs no token.
 
-## 1. Get the files (pick one)
-- `git clone https://github.com/MatthewGRodriguez/atlas-sync-test.git`, or
-- Open https://github.com/MatthewGRodriguez/atlas-sync-test, click **Code → Download ZIP**, and unzip it.
+**How sign-in works:** you create a fine-grained personal access token on GitHub and paste it into the page. This is a pasted token, not an OAuth sign-in: GitHub offers no sign-in for a static page without a backend, and there is no proxy. Everything is inside `clients/client.html`.
 
-You do not need GitHub Pages. Open `clients/client.html` straight from disk (`file://`).
+## 1. Get the file
+`git clone https://github.com/MatthewGRodriguez/atlas-sync-test.git` or **Code → Download ZIP**. Open `clients/client.html` straight from disk (`file://`) in Chrome. No GitHub Pages needed. Each person does this on their own computer, or in two separate Chrome profiles (one per account) on one Mac.
 
-## 2. Open two clients
-In Chrome, open these two addresses in two tabs (change the path to where you put the files):
-```
-file:///Users/<you>/atlas-sync-test/clients/client.html?writer=A
-file:///Users/<you>/atlas-sync-test/clients/client.html?writer=B
-```
-Each writer writes only to `log/<writer>/`.
+## 2. Create your log repo (each person, once)
+1. Click **Create my log repo**.
+   - Not signed in yet (usual case): the tab goes to GitHub's *new repository* page prefilled with name `atlas-sync-log`, **Public**, description "Atlas sync log". Make sure you are signed in to GitHub as **yourself**, click **Create repository**, then press the browser **Back** button. A README is optional; an empty repo works.
+   - Already signed in with a token that has Administration: write: the page creates the public repo directly through the API.
+   - If the repo already exists, the page just uses it.
+2. After sign-in (step 3), the page shows "my repo `<login>/atlas-sync-log`: exists, public, write access confirmed". **Check my repo again** re-checks.
 
-## 3. Create a token (one time, about 1 minute)
-1. In tab A click **Sign in with GitHub**. GitHub's *New fine-grained personal access token* page opens in the same tab, prefilled with name "Atlas sync", 30-day expiry and Contents: Read and write.
-2. Under **Repository access** pick **Only select repositories** → `MatthewGRodriguez/atlas-sync-test`.
-3. Under **Permissions** confirm **Contents: Read and write**.
-4. Click **Generate token** and copy it.
-5. Press the browser **Back** button to return to tab A (its settings and pre-sign-in state are restored from sessionStorage; no token is stored at this point).
-
-## 4. Connect (both tabs)
-1. Paste the token into the **Token** field and click **Connect**. Tick **Remember for this tab** first if you want it to survive a reload of that tab (sessionStorage only; it is never saved to localStorage).
-2. Expected: "Signed in as <your login>; … write access confirmed." The header shows **signed in as <login>**.
-3. Possible messages:
+## 3. Create a token and connect (each person)
+1. Click **Sign in with GitHub**. GitHub's *New fine-grained personal access token* page opens in the same tab, prefilled with name "Atlas sync", 30-day expiry and Contents: Read and write.
+2. **Resource owner**: yourself. **Repository access** → **Only select repositories** → `<your-login>/atlas-sync-log`.
+   (Only if you ticked "token may also create my repo" and the repo does not exist yet: the token URL also asks for Administration: write and you must pick **All repositories**, because a repo that does not exist cannot be selected. That is a broad token; the github.com/new path in step 2 avoids it.)
+3. **Generate token**, copy it, press **Back**, paste it into **Token**, click **Connect**. Tick **Remember for this tab** first if you want it to survive a reload (sessionStorage only).
+4. Expected: "Signed in as `<login>`; my repo `<login>/atlas-sync-log`: exists, public, write access confirmed." The writer id becomes your login.
+5. Possible messages:
    - "rejected this token (401)": wrong, expired, or revoked token.
-   - "cannot see MatthewGRodriguez/atlas-sync-test": the repo was not selected under Repository access.
-   - "WARNING: GitHub reports no write access": the page still connects, but writes will be refused. Check Contents: Read and write on the token, and see the next item.
-   - "Token belongs to GitHub account X, not the repo owner" (wrong account / not a collaborator): the token was made on a different GitHub account. A public repo is readable by any token, so GET /user and the repo check both return 200, but writing needs that account to be a collaborator with write access (Settings → Collaborators on the repo, then accept the invite), or create the token while signed in as the repo owner. Sign-in diagnostics log the login and the raw `permissions` object.
-   - "Write refused (403)": first write was rejected; the batch stays queued and is retried after you fix access and reconnect.
-4. Paste the same token in tab B and click **Connect** (one token for both tabs is fine).
+   - "does not exist yet": click **Create my log repo**.
+   - "WARNING: GitHub reports no write access": the token's Repository access does not include your repo, or Contents is read-only. Fix the token (Settings → Developer settings → Fine-grained tokens → edit).
+   - "is PRIVATE": the other person cannot read it. Make it public.
+   - "Write refused (403)": the first write was rejected; the batch stays queued.
 
-If a token expires or is revoked during the test, the page signs out on the next 401 and says so.
+## 4. Add each other as peers
+1. Click **Copy** next to "My repo" and send that short string (e.g. `MatthewGRodriguez/atlas-sync-log`) to the other person. It is not a secret. **Copy share link** gives a link with `?peers=` already filled in.
+2. Paste the other person's string into **Peers** (comma or newline separated).
 
 ## 5. Sync test
-Click **Start sync** in both tabs (polls every 7 s).
-1. In A, change Harbor walk's joy to 9. Within about 10 s, B should show 9.
-2. In B, change the same joy to 6. A should show 6, plus a red **CHANGED … (yours) … by B** line.
-3. In A press **+1** and in B press **+1** on the same item at about the same time. Both should end at 8 (6 + 1 + 1; deltas add up).
-4. Click **Send empty batch** in A. A new commit should appear with no error.
-5. Add the same note in A and then in B. In the Revisions panel, the rev for `items/i1/notes` should not go up the second time.
-6. Pick another place to sleep and move the date. It should show up in the other tab.
+Click **Start sync** on both sides (poll every 10 s when signed in; adjustable).
+1. Matthew changes Harbor walk's joy to 9. Within about 10–20 s the tester sees 9.
+2. Tester changes it to 6. Matthew sees 6 and a red **CHANGED … (yours) … by `<tester>`** line.
+3. Both press **+1** on the same item at about the same time. Both end at 8 (deltas add up).
+4. **Send empty batch**: a new commit in your own repo, no error.
+5. Add the same note on both sides: the rev for `items/i1/notes` does not go up the second time.
+6. Pick another place to sleep and move the date: shows up on the other side.
+7. Reload one tab: the state is rebuilt from both repos and matches.
+8. Optional: open the page signed out with `?peers=<matthew>/atlas-sync-log,<tester>/atlas-sync-log`: it shows the same state read anonymously (polls slowly, about 72 s per repo, because anonymous access is 60 requests/hour).
 
-Check that the repo got commits `atlas:demo writer:A seq:N` with files under `log/A/` and `log/B/`.
+Each repo should only contain commits `atlas:demo writer:<its owner> seq:N` with files under `log/<owner>/`.
 
 ## 6. What to report if anything fails
-- Screenshot of the **Status** panel and the **Event log**.
-- The copied **Sign-in diagnostics** text (token is masked). **Run API probe** checks that api.github.com is reachable.
-- Your browser and version, and whether you used `file://` or http.
-- If writes failed: the error lines (for example 403 or 404 with their message).
+- Screenshot of **Status**, **Repos read** and **Event log**.
+- The copied **Sign-in diagnostics** text (token masked). **Run API probe** checks that api.github.com is reachable.
+- Browser and version, `file://` or http.
 
 ## 7. Clean up
-- Click **Sign out** in both tabs (clears memory and sessionStorage, stops polling) or close them.
-- Revoke the token: GitHub → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Atlas sync → Delete**. (It also expires on its own after 30 days.)
+- **Sign out** (clears memory and sessionStorage, stops polling) or close the tab.
+- Delete the token: GitHub → Settings → Developer settings → Fine-grained tokens → Atlas sync → Delete (it also expires after 30 days).
+- Optionally delete your `atlas-sync-log` repo (Settings → Danger Zone). It holds synthetic data only.
 
 ## Local mock (no GitHub needed)
 ```
-node tools/mock_github.js                         # http://localhost:18799
+node tools/mock_github.js                         # http://localhost:18799, multi-account
 python3 -m http.server 8798 --bind 127.0.0.1      # from repo root, for the http:// check
-python3 tools/e2e_test.py                         # Playwright + Chrome
+python3 tools/e2e_test.py                         # Playwright + one headless Chrome
 ```
-Open `client.html?writer=A&api=http://localhost:18799` and paste a synthetic mock token:
-`test-valid-<name>` (works), `test-readonly-<name>` (no write), `test-norepo-<name>` (repo not selected); anything else gets 401.
-Revoke mid-session with `http://localhost:18799/__mock/config?revoke=<token>` (`revoke=none` resets). Never use ports 8765 or 8791.
+Open `client.html?api=http://localhost:18799&peers=bob/atlas-sync-log` and paste a synthetic mock token:
+`test-valid-<login>[-anything]` (login `<login>`, writes only to repos it owns, can create repos), `test-readonly-<login>` (no write); anything else gets 401; no token = anonymous reads of public repos.
+Knobs: `/__mock/mkrepo?full=bob/atlas-sync-log&init=0` (empty repo), `/__mock/config?createForbidden=1` (POST /user/repos → 403), `?revoke=<token>|none`, `?fail403=N&failPut409=N`; `/__mock/state`. Client param `anonmin=<s>` overrides the anonymous per-repo poll floor (tests only). Never use ports 8765 or 8791.
