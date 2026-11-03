@@ -12,7 +12,15 @@ Date: 2026-11-02. Legend: **[V-curl]** verified by curl this session · **[V-doc
 | Fine-grained PAT pasted into page | **Yes** | api.github.com sends `Access-Control-Allow-Origin: *` and allows `Authorization` header and GET/POST/PATCH/PUT/DELETE [V-curl]. Create at Settings → Developer settings → Fine-grained tokens: Resource owner = user, **Only select repositories = atlas-sync-test**, Repository permissions **Contents: Read and write** (Metadata: read is added automatically) [A, standard UI]. Set short expiry (e.g. 7 days) [A: max/policy details not re-checked]. Each tester uses their own PAT → commits attributed to them. Non-owners need to be collaborators on the repo to write [A]. |
 | CORS proxy | Yes, with a proxy | A tiny proxy (e.g. Cloudflare Worker, free tier) forwards device-flow calls and adds CORS headers. No secret needed for device flow, so the proxy can be stateless. But it is "a backend of ours" and a third party sees tokens in transit. Public CORS proxies: do not use with tokens. [A] |
 
-**Recommendation for the test:** fine-grained PAT, one per tester, scoped to only this repo, Contents R/W, short expiry. Keep the token in memory or `sessionStorage` (not `localStorage`) and offer a "forget token" button. Phase 2 (optional): device flow via a self-hosted stateless CORS proxy to get a real "Sign in with GitHub" button.
+**Decision (Matthew, 2026-11-02):** everything stays inside the single HTML file, **no proxy of any kind**, sign-in = **pasted fine-grained PAT**. The device-flow code and proxy option were removed from `client.html` (the device flow was blocked by CORS on Matthew's Mac, as predicted above).
+
+**Implemented sign-in in `clients/client.html`:**
+- **Sign in with GitHub** opens (new tab, `noopener`) `https://github.com/settings/personal-access-tokens/new?name=Atlas%20sync&description=Static%20page%20access&expires_in=30&contents=write`. On-page steps: Only select repositories → `MatthewGRodriguez/atlas-sync-test`, confirm Contents: Read and write, Generate token, paste.
+- Password-type field + **Connect**: `GET /user` (shows login), then `GET /repos/{repo}`: 401 → token wrong/expired/revoked; 404/403 → repo not selected; `permissions.push === false` → lacks write access. If `permissions` is absent the first write confirms access [A: whether fine-grained PATs always return `permissions` on this endpoint is not verified live].
+- Token in memory only by default; "Remember for this tab" uses `sessionStorage`; never `localStorage`; masked in diagnostics. **Sign out** clears memory + sessionStorage and stops polling. Any 401 mid-session (poll, read, write) signs out with a clear message.
+- `?api=` overrides the API base (tests use the mock on port 18799).
+
+**Honest note:** this is a pasted token. GitHub offers no sign-in for a static page without a backend. The user handles the token, can over-scope it by mistake, and must revoke it on GitHub (Settings → Developer settings → Fine-grained tokens) when done.
 
 **Honest limits:** any secret in a static page is public; tokens in localStorage are readable by any script on that origin (XSS) and, for `file://`, origin handling varies by browser (Chrome treats file pages as opaque origin `null`) [A]; a PAT is user-handled and can be over-scoped by mistake; there is no server to revoke on logout.
 

@@ -22,7 +22,8 @@ table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #eef0f4;
 .ev-changed{color:var(--bad);font-weight:600}.ev-err{color:var(--bad)}.ev-ok{color:var(--ok)}
 .kv{display:grid;grid-template-columns:150px 1fr;gap:2px 8px}.kv div:nth-child(odd){color:var(--mut)}
 .err{color:var(--bad)}.mut{color:var(--mut)}code{background:#f1f3f7;padding:0 4px;border-radius:3px}
-.devcode{font:600 22px ui-monospace,monospace;letter-spacing:.1em}
+input[type=password]{padding:3px 6px;border:1px solid var(--b);border-radius:5px}
+ol.steps{margin:6px 0;padding-left:20px}#authMsg{margin-top:6px}
 </style></head><body>
 <header><h1>Atlas sync test</h1><span class="pill" id="hdrWriter">writer ?</span><span id="hdrUser" class="mut">not signed in</span><span id="hdrQueue" class="mut"></span></header>
 <main>
@@ -34,16 +35,20 @@ table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #eef0f4;
  <label>API base <input type="url" id="fApi" size="28"></label>
  <label>Log root <input type="text" id="fLogRoot" size="10"></label>
  <label>Base commit <input type="text" id="fBase" size="12" title="compare starts from this commit (the repo's first commit)"></label>
- <div><button id="bStart" class="pri">Start sync</button> <button id="bStop">Stop</button> <span class="mut">Settings also accept URL params: ?writer=A&amp;api=…&amp;client_id=…&amp;auth=…&amp;proxy=…&amp;poll=7</span></div>
+ <div><button id="bStart" class="pri">Start sync</button> <button id="bStop">Stop</button> <span class="mut">Settings also accept URL params: ?writer=A&amp;api=…&amp;repo=…&amp;poll=7</span></div>
 </section>
-<section style="margin-top:12px"><h2>Sign in with GitHub</h2>
- <label>OAuth App client ID <input type="text" id="fClientId" size="24" placeholder="Iv1… / Ov23… (public, not a secret)"></label>
- <label>Scope <input type="text" id="fScope" size="12"></label><br>
- <label>Auth base <input type="url" id="fAuth" size="26"></label>
- <label>Proxy URL <input type="url" id="fProxy" size="26" placeholder="(empty = direct)"></label>
- <div style="margin-top:6px"><button id="bDevice" class="pri">Sign in with GitHub</button> <button id="bCancel">Cancel</button> <button id="bSignOut">Sign out</button> <button id="bWeb" title="Diagnostic only: cannot finish without a client secret">Try web flow (diagnostic)</button></div>
- <div id="devBox" style="display:none;margin-top:8px">Enter this code at <a id="devLink" target="_blank" rel="noopener"></a>: <div class="devcode" id="devCode"></div><span class="mut" id="devState"></span></div>
- <div class="mut" style="margin-top:4px">The token is kept only in this tab (memory + sessionStorage). It is never written to the repo or localStorage.</div>
+<section style="margin-top:12px"><h2>Sign in with GitHub (personal access token)</h2>
+ <div><button id="bSignIn" class="pri">Sign in with GitHub</button> <span class="mut">opens GitHub's token page in a new tab</span></div>
+ <ol class="steps">
+  <li>On the GitHub page, under <b>Repository access</b> pick <b>Only select repositories</b> → <code id="repoHint">MatthewGRodriguez/atlas-sync-test</code>.</li>
+  <li>Under <b>Permissions</b> confirm <b>Contents: Read and write</b> (prefilled).</li>
+  <li>Click <b>Generate token</b>, copy it, and paste it below.</li>
+ </ol>
+ <label>Token <input type="password" id="fToken" size="34" autocomplete="off" spellcheck="false" placeholder="github_pat_…"></label>
+ <button id="bConnect" class="pri">Connect</button> <button id="bSignOut">Sign out</button><br>
+ <label><input type="checkbox" id="fRemember"> Remember for this tab</label>
+ <div id="authMsg" class="mut"></div>
+ <div class="mut" style="margin-top:4px">The token stays in this tab's memory only (or sessionStorage if you tick "Remember for this tab"). It is never written to localStorage, the repo, the log, or the diagnostics. This is a pasted token: GitHub offers no sign-in for a static page without a backend.</div>
 </section>
 <section style="margin-top:12px"><h2>Plan / atlas (synthetic)</h2>
  <table><thead><tr><th>Item</th><th>Joy</th><th>Notes</th></tr></thead><tbody id="items"></tbody></table>
@@ -59,7 +64,7 @@ table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #eef0f4;
 <section style="margin-top:12px"><h2>Write queue</h2><div class="log" id="qview" style="max-height:120px"></div></section>
 <section style="margin-top:12px"><h2>Revisions / owners per path</h2><table><thead><tr><th>Path</th><th>Value</th><th>Rev</th><th>Owner</th><th>Last (writer:seq)</th></tr></thead><tbody id="revs"></tbody></table></section>
 <section style="margin-top:12px"><h2>Sign-in diagnostics</h2><div class="mut">Records what happened in this browser. Contains no token. Copy it into your report if sign-in fails.</div>
- <div class="log" id="diag"></div><button id="bCopyDiag">Copy diagnostics</button> <button id="bProbe">Run CORS probe only</button></section>
+ <div class="log" id="diag"></div><button id="bCopyDiag">Copy diagnostics</button> <button id="bProbe">Run API probe</button></section>
 </div>
 </main>
 <script>
@@ -217,8 +222,8 @@ async function pump(){
         }
         attempt++;
         if (r && r.status===422 && /sha/i.test(j.message||'')){ A.nextSeq = b.seq+1; b.seq = null; ev(`seq ${pad(A.nextSeq-1)} already exists, using next`); b.state='queued'; continue; }
-        if (r && (r.status===401)){ err('Write refused: not signed in or token expired (401). Sign in again.'); b.state='queued'; A.token=null; renderStatus(); return; }
-        if (r && r.status===404){ err('Write refused (404): the token cannot write to this repo, or the repo name is wrong.'); }
+        if (r && (r.status===401)){ b.state='queued'; on401('a write'); return; }
+        if (r && (r.status===404 || (r.status===403 && /not accessible|permission/i.test(j.message||'')))){ err(`Write refused (${r.status}): the token cannot write to this repo (needs Contents: Read and write on ${A.repo}). Batch stays queued.`); b.state='queued'; renderQueue(); A.writing=false; return; }
         let delay;
         const ra = r && r.headers.get('retry-after');
         if (r && (r.status===403||r.status===429)){
@@ -238,10 +243,12 @@ async function pump(){
 function schedulePoll(ms){ clearTimeout(A.pollTimer); if (A.running) A.pollTimer=setTimeout(poll, ms); }
 async function getJSON(path){
   const r = await fetch(api(path), {headers:hdr()}); trackRate(r);
+  if (r.status===401){ const e=new Error('401'); e.is401=true; throw e; }
   if (!r.ok) throw new Error(`${r.status} on ${path.split('?')[0]}`); return r.json();
 }
 async function poll(){
   if (!A.running) return;
+  if (!A.token){ A.lastPollResult='waiting for sign-in'; renderStatus(); schedulePoll(1000); return; }
   try {
     const r = await fetch(api(`/repos/${A.repo}/git/ref/heads/main`), {headers:hdr(A.etag?{'If-None-Match':A.etag}:{}) , cache:'no-store'});
     trackRate(r); A.lastPoll = now(); A.lastPollResult = String(r.status);
@@ -249,8 +256,10 @@ async function poll(){
     else if (r.ok){
       A.etag = r.headers.get('etag'); const j = await r.json(); const sha = j.object.sha;
       if (sha !== A.lastSha) await catchUp(A.lastSha || A.base, sha);
-    } else throw new Error(`ref poll returned ${r.status}`);
-  } catch(e){ A.lastPollResult='error'; err(`Poll failed: ${e.message}`); }
+    }
+    else if (r.status===401){ on401('a poll'); return; }
+    else throw new Error(`ref poll returned ${r.status}`);
+  } catch(e){ if (e.is401){ on401('a poll'); return; } A.lastPollResult='error'; err(`Poll failed: ${e.message}`); }
   renderStatus(); schedulePoll(A.pollSec*1000);
 }
 async function catchUp(from, to){
@@ -280,85 +289,57 @@ async function catchUp(from, to){
   rebuild(); pump();
 }
 
-/* ================= sign-in: device flow + diagnostics ================= */
-function authUrl(path){ const full = $('fAuth').value.replace(/\/$/,'') + path; const px = $('fProxy').value.trim(); return px ? px.replace(/\/$/,'') + '/' + full : full; }
-let deviceAbort = false;
-async function authPost(path, params, label){
-  const url = authUrl(path);
-  diag(`${label}: POST ${url} (form-encoded, Accept: application/json)`);
-  let r;
-  try { r = await fetch(url, {method:'POST', headers:{'Accept':'application/json','Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams(params).toString()}); }
-  catch(e){
-    diag(`${label}: BLOCKED/FAILED before a readable response. Browser error: ${e.name}: ${e.message}`);
-    try { await fetch(url, {method:'POST', mode:'no-cors', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams({client_id:params.client_id||''}).toString()});
-      diag(`${label}: no-cors probe reached the server (opaque response) => network OK, the block is CORS (server sent no Access-Control-Allow-Origin for origin "${location.origin}").`); }
-    catch(e2){ diag(`${label}: no-cors probe also failed (${e2.message}) => network/DNS/extension/proxy problem, not only CORS.`); }
-    throw new Error('blocked');
-  }
-  const hs = []; r.headers.forEach((v,k)=>{ if (/^access-control|content-type|x-github/i.test(k)) hs.push(`${k}: ${v}`); });
-  diag(`${label}: HTTP ${r.status}; readable headers: ${hs.join(' | ') || '(none exposed)'}`);
-  let j = {}; try { j = await r.json(); } catch { diag(`${label}: body was not JSON`); }
-  const safe = Object.fromEntries(Object.entries(j).map(([k,v])=>[k, /token|device_code/.test(k) ? '[redacted]' : v]));
-  diag(`${label}: body ${JSON.stringify(safe)}`);
+/* ================= sign-in: pasted fine-grained PAT + diagnostics ================= */
+const PAT_URL = 'https://github.com/settings/personal-access-tokens/new?name=Atlas%20sync&description=Static%20page%20access&expires_in=30&contents=write';
+function mask(t){ return t ? `[token hidden, ${t.length} chars, prefix ${t.startsWith('github_pat_')?'github_pat_':t.startsWith('ghp_')?'ghp_':'other'}]` : '(none)'; }
+function authMsg(text, cls='mut'){ $('authMsg').className=cls; $('authMsg').textContent=text; }
+function openTokenPage(){ diag('opened GitHub fine-grained token page in a new tab'); const w=window.open(PAT_URL, '_blank', 'noopener,noreferrer'); if (w) try{ w.opener=null; }catch{} $('fToken').focus(); }
+async function authGet(path, token, label){
+  let r; try { r = await fetch(api(path), {headers:{Accept:'application/vnd.github+json', Authorization:'Bearer '+token}, cache:'no-store'}); }
+  catch(e){ diag(`${label}: GET ${api(path)} failed before a response (${e.name}: ${e.message})`); throw new Error(`network error on ${label}`); }
+  trackRate(r); let j={}; try { j = await r.json(); } catch {}
+  diag(`${label}: GET ${api(path)} -> HTTP ${r.status}${j.message?' ('+j.message+')':''}`);
   return {r, j};
 }
-async function deviceSignIn(){
-  const cid = $('fClientId').value.trim();
-  if (!cid){ err('Enter the OAuth App client ID first (public value from your OAuth App page).'); return; }
-  deviceAbort = false; $('bDevice').disabled = true;
-  diag(`--- device flow start; page origin "${location.origin}", protocol ${location.protocol}, auth base ${$('fAuth').value}, proxy ${$('fProxy').value||'(none)'}; UA ${navigator.userAgent}`);
+async function connect(tokenArg, fromStorage=false){
+  if (!readSettings()) return false;
+  const token = (tokenArg ?? $('fToken').value).trim();
+  if (!token){ authMsg('Paste a token first.', 'err'); return false; }
+  if (/\s/.test(token)){ authMsg('That does not look like a token (contains spaces).', 'err'); return false; }
+  $('bConnect').disabled = true; authMsg('Checking token…');
+  diag(`--- connect: token ${mask(token)}, API ${A.api}, repo ${A.repo}${fromStorage?' (restored from sessionStorage)':''}`);
   try {
-    const {r, j} = await authPost('/login/device/code', {client_id:cid, scope:$('fScope').value.trim()}, 'device/code');
-    if (!r.ok || !j.device_code){ err(`Device code request failed (${r.status}${j.error?': '+j.error:''}). See Sign-in diagnostics.`); return; }
-    $('devBox').style.display=''; $('devCode').textContent=j.user_code; $('devLink').textContent=j.verification_uri; $('devLink').href=j.verification_uri;
-    try { window.open(j.verification_uri, '_blank', 'noopener'); } catch {}
-    let interval = Math.max(1, +j.interval || 5), deadline = Date.now() + (+j.expires_in||900)*1000;
-    while (!deviceAbort && Date.now() < deadline){
-      $('devState').textContent = ` waiting for you to approve… (checking every ${interval}s)`;
-      await sleep(interval*1000); if (deviceAbort) break;
-      const t = await authPost('/login/oauth/access_token', {client_id:cid, device_code:j.device_code, grant_type:'urn:ietf:params:oauth:grant-type:device_code'}, 'access_token');
-      if (t.j.access_token){ setToken(t.j.access_token); diag(`device flow: SUCCESS, token received (not shown), scope "${t.j.scope||''}"`); await whoAmI(); break; }
-      if (t.j.error==='authorization_pending') continue;
-      if (t.j.error==='slow_down'){ interval = (+t.j.interval||interval+5); continue; }
-      err(`Sign-in stopped: ${t.j.error||t.r.status} ${t.j.error_description||''}`); break;
-    }
-  } catch(e){ if (e.message==='blocked') err('Sign-in request was blocked by the browser (most likely CORS). This is the expected result for a static page; copy the Sign-in diagnostics.'); else err('Sign-in error: '+e.message); }
-  finally { $('bDevice').disabled=false; $('devBox').style.display = A.token ? 'none' : $('devBox').style.display; $('devState').textContent=''; }
+    const u = await authGet('/user', token, 'GET /user');
+    if (u.r.status===401){ fail('GitHub rejected this token (401): it is wrong, expired, or revoked.'); return false; }
+    if (!u.r.ok || !u.j.login){ fail(`Could not check the token (GET /user returned ${u.r.status}).`); return false; }
+    const rp = await authGet(`/repos/${A.repo}`, token, `GET /repos/${A.repo}`);
+    if (rp.r.status===401){ fail('GitHub rejected this token (401) on the repo check.'); return false; }
+    if (rp.r.status===404 || rp.r.status===403){ fail(`Token works (user ${u.j.login}) but cannot see ${A.repo}. Edit the token: Repository access → Only select repositories → ${A.repo}.`); return false; }
+    if (!rp.r.ok){ fail(`Repo check failed (HTTP ${rp.r.status}).`); return false; }
+    const perms = rp.j.permissions;
+    if (perms && perms.push === false){ fail(`Token can read ${A.repo} but lacks write access. Edit the token: Permissions → Contents: Read and write.`); return false; }
+    A.token = token; A.login = u.j.login; $('fToken').value = '';
+    try { if ($('fRemember').checked) sessionStorage.setItem(TOKEN_KEY, token); else sessionStorage.removeItem(TOKEN_KEY); } catch {}
+    const note = perms ? 'write access confirmed' : 'write access not reported by GitHub; it will be confirmed on first write';
+    authMsg(`Signed in as ${u.j.login}; ${A.repo}: ${note}.`, 'ev-ok'); ev(`signed in as ${u.j.login}`,'ev-ok');
+    diag(`connect: OK as ${u.j.login}; permissions ${perms?JSON.stringify(perms):'(not present)'}; stored in ${$('fRemember').checked?'memory + sessionStorage':'memory only'}`);
+    renderStatus(); pump(); return true;
+  } catch(e){ fail(`Could not reach GitHub API: ${e.message}. See Sign-in diagnostics.`); return false; }
+  finally { $('bConnect').disabled = false; renderStatus(); }
+  function fail(msg){ authMsg(msg, 'err'); err(msg); diag('connect: FAILED - '+msg); if (fromStorage) try{ sessionStorage.removeItem(TOKEN_KEY); }catch{} }
 }
-function setToken(t){ A.token=t; try{ sessionStorage.setItem(TOKEN_KEY, t); }catch{} renderStatus(); }
-async function whoAmI(){
-  try { const r = await fetch(api('/user'), {headers:hdr()}); trackRate(r);
-    const hs=[]; r.headers.forEach((v,k)=>{ if(/^access-control-allow-origin/i.test(k)) hs.push(`${k}: ${v}`); });
-    diag(`GET /user: HTTP ${r.status} ${hs.join(' ')}`);
-    if (!r.ok){ err(`Could not confirm sign-in (GET /user ${r.status}).`); return; }
-    const j = await r.json(); A.login = j.login; ev(`signed in as ${j.login}`,'ev-ok'); diag(`signed in as ${j.login}`); pump();
-  } catch(e){ diag(`GET /user failed: ${e.message}`); err('GET /user failed: '+e.message); }
-  renderStatus();
+function signOut(reason){
+  A.token=null; A.login=null; $('fToken').value='';
+  try{ sessionStorage.removeItem(TOKEN_KEY); }catch{}
+  if (A.running) stop();
+  const msg = reason || 'Signed out: token removed from this tab (memory and sessionStorage); polling stopped.';
+  authMsg(msg, reason?'err':'mut'); ev(msg, reason?'ev-err':''); diag('sign-out: '+msg); renderStatus();
 }
-function signOut(){ A.token=null; A.login=null; deviceAbort=true; try{ sessionStorage.removeItem(TOKEN_KEY); }catch{} ev('signed out (token removed from this tab)'); renderStatus(); }
-async function sha256b64url(s){ const h = await crypto.subtle.digest('SHA-256', te.encode(s)); return btoa(String.fromCharCode(...new Uint8Array(h))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
-async function webFlowDiag(){
-  const cid = $('fClientId').value.trim(); if (!cid){ err('Enter the client ID first.'); return; }
-  if (!crypto.subtle){ diag('web flow: crypto.subtle unavailable on this origin (PKCE needs a secure context; file:// may lack it)'); return; }
-  const rnd = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b=>b.toString(16).padStart(2,'0')).join('');
-  const state = rnd(16), verifier = rnd(32);
-  sessionStorage.setItem('atlasOAuthState', state); sessionStorage.setItem('atlasPkce', verifier);
-  const u = $('fAuth').value.replace(/\/$/,'') + '/login/oauth/authorize?' + new URLSearchParams({client_id:cid, scope:$('fScope').value, state, code_challenge:await sha256b64url(verifier), code_challenge_method:'S256'});
-  diag(`web flow (diagnostic): redirecting to authorize; GitHub will send you to the OAuth App's callback URL. The code->token exchange needs the client secret, so this page will NOT finish sign-in.`);
-  location.href = u;
-}
-function checkWebReturn(){
-  if (!Q.get('code')) return;
-  const ok = Q.get('state') && Q.get('state') === sessionStorage.getItem('atlasOAuthState');
-  diag(`web flow returned with a code (not shown); state ${ok?'matches':'DOES NOT match'}. Exchange not attempted: it needs the client secret (cannot be in a static page). Web flow therefore cannot complete without a backend/proxy.`);
-  sessionStorage.removeItem('atlasOAuthState'); sessionStorage.removeItem('atlasPkce');
-  const q = new URLSearchParams(location.search); q.delete('code'); q.delete('state'); history.replaceState(null,'', location.pathname + (q.toString()?'?'+q:''));
-}
-async function corsProbe(){
-  diag('--- CORS probe');
-  try { await authPost('/login/device/code', {client_id:$('fClientId').value.trim()||'probe'}, 'probe device/code'); } catch {}
-  try { const r = await fetch(api('/user'), {headers:{Accept:'application/vnd.github+json'}}); diag(`probe API (${A.api}): HTTP ${r.status}, ACAO ${r.headers.get('access-control-allow-origin')??'(not visible)'}`); }
-  catch(e){ diag(`probe API: failed ${e.message}`); }
+function on401(where){ signOut(`Signed out: GitHub returned 401 on ${where}; the token expired or was revoked. Create a new token and connect again.`); }
+async function apiProbe(){
+  diag('--- API probe (no token sent)');
+  try { const r = await fetch(api('/user'), {headers:{Accept:'application/vnd.github+json'}, cache:'no-store'}); diag(`probe ${A.api}/user: HTTP ${r.status} (401 expected without token), ACAO ${r.headers.get('access-control-allow-origin')??'(not visible)'}`); }
+  catch(e){ diag(`probe API failed: ${e.message} => network/CORS problem`); }
 }
 
 /* ================= rendering ================= */
@@ -387,7 +368,7 @@ function renderQueue(){
 }
 function renderStatus(){
   $('hdrWriter').textContent = 'writer ' + (A.writer||'?');
-  $('hdrUser').textContent = A.login ? 'signed in as ' + A.login : (A.token ? 'token present, user unknown' : 'not signed in');
+  $('hdrUser').textContent = A.login ? 'signed in as ' + A.login : (A.token ? 'checking token…' : 'not signed in');
   const rows = [['Signed in as', A.login || (A.token?'(checking…)':'not signed in')], ['Writer / log folder', `${A.writer} → ${A.logRoot}/${A.writer}/`], ['Sync', A.running ? (A.synced?'running':'initial sync…') : 'stopped'],
     ['Last poll', `${A.lastPoll} → ${A.lastPollResult}`], ['Rate limit remaining', A.rate], ['Queue length', A.pending.filter(b=>b.state!=='written').length], ['Next own seq', A.nextSeq],
     ['Last commit', A.lastCommit], ['Segments applied', A.confirmed.size], ['Errors', A.errors.length ? A.errors.join('\n') : 'none']];
@@ -422,8 +403,9 @@ document.addEventListener('click', e=>{
 $('bStart').onclick=start; $('bStop').onclick=stop; $('bPollNow').onclick=()=>{ if (A.running){ clearTimeout(A.pollTimer); poll(); pump(); } };
 $('bEmpty').onclick=()=>propose([]);
 $('bRaw').onclick=()=>{ try { propose(JSON.parse($('rawOps').value)); } catch(e){ err('Raw batch is not valid JSON: '+e.message); } };
-$('bDevice').onclick=deviceSignIn; $('bCancel').onclick=()=>{ deviceAbort=true; diag('device flow cancelled by user'); };
-$('bSignOut').onclick=signOut; $('bWeb').onclick=webFlowDiag; $('bProbe').onclick=corsProbe;
+$('bSignIn').onclick=openTokenPage; $('bConnect').onclick=()=>connect(); $('fToken').addEventListener('keydown', e=>{ if (e.key==='Enter') connect(); });
+$('bSignOut').onclick=()=>signOut(); $('bProbe').onclick=apiProbe;
+$('fRemember').onchange=()=>{ try{ if (!$('fRemember').checked) sessionStorage.removeItem(TOKEN_KEY); else if (A.token) sessionStorage.setItem(TOKEN_KEY, A.token); }catch{} };
 $('bCopyDiag').onclick=async()=>{ const t=$('diag').innerText; try{ await navigator.clipboard.writeText(t); ev('diagnostics copied'); }catch{ const ta=document.createElement('textarea'); ta.value=t; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); ev('diagnostics copied'); } };
 $('bDownload').onclick=()=>{
   const snap = {writer:A.writer, repo:A.repo, lastCommit:A.lastSha, values:A.view.v, revisions:A.view.rev, segments:sortedConfirmed().map(c=>({path:[...A.confirmed].find(([k,v])=>v===c)[0], order:c.order, commit:c.commit})), pending:A.pending.filter(b=>b.state!=='written').map(b=>({seq:b.seq,ops:b.ops}))};
@@ -431,12 +413,11 @@ $('bDownload').onclick=()=>{
 };
 // init
 $('fWriter').value = Q.get('writer')||'A'; $('fRepo').value = Q.get('repo')||'MatthewGRodriguez/atlas-sync-test';
-$('fApi').value = Q.get('api')||'https://api.github.com'; $('fAuth').value = Q.get('auth')||'https://github.com'; $('fProxy').value = Q.get('proxy')||'';
-$('fClientId').value = Q.get('client_id')||''; $('fScope').value = Q.get('scope')||'public_repo'; $('fPoll').value = Q.get('poll')||7;
+$('fApi').value = Q.get('api')||'https://api.github.com'; $('fPoll').value = Q.get('poll')||7;
 $('fLogRoot').value = Q.get('logroot')||'log'; $('fBase').value = Q.get('base')||'540e077df64c47e115a3bc91a653ecfa50d35238';
 readSettings();
-try { const t = sessionStorage.getItem(TOKEN_KEY); if (t){ A.token=t; whoAmI(); } } catch {}
-checkWebReturn();
+$('repoHint').textContent = A.repo;
+try { const t = sessionStorage.getItem(TOKEN_KEY); if (t){ $('fRemember').checked = true; connect(t, true); } } catch {}
 A.view = {v:clone(SEED), rev:{}}; render();
 diag(`page loaded: origin "${location.origin}", protocol ${location.protocol}, secure context ${window.isSecureContext}`);
 if (Q.get('autostart')==='1') start();

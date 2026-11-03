@@ -1,36 +1,41 @@
 # Test runbook: two clients, real GitHub (Matthew's Mac)
 
-**Never paste a token, code or secret into chat.** The page never shows the token; the diagnostics box is safe to copy.
+**Never paste a token into chat, a file, or a commit.** The page never shows the token; the diagnostics box masks it and is safe to copy.
 
-**Expected outcome:** sign-in will most likely be **blocked by CORS**. GitHub's device-flow endpoints (`github.com/login/device/code`, `/login/oauth/access_token`) sent no `Access-Control-Allow-Origin` header when tested with curl, so a browser page should not be able to read their answers. That failure is useful: the diagnostics box records it, and then we decide on a proxy.
+**How sign-in works:** you create a fine-grained personal access token on GitHub and paste it into the page. This is a pasted token, not an OAuth sign-in: GitHub offers no sign-in for a static page without a backend, and we use no proxy. Everything is inside `clients/client.html`.
 
 ## 1. Get the files (pick one)
 - `git clone https://github.com/MatthewGRodriguez/atlas-sync-test.git`, or
 - Open https://github.com/MatthewGRodriguez/atlas-sync-test, click **Code → Download ZIP**, and unzip it.
 
-You do not need GitHub Pages. You open `clients/client.html` straight from disk (`file://`).
+You do not need GitHub Pages. Open `clients/client.html` straight from disk (`file://`).
 
-## 2. Register an OAuth App (one time)
-1. GitHub → **Settings → Developer settings → OAuth Apps → New OAuth App**.
-2. Name: `atlas-sync-test`. Homepage URL: `http://localhost`. Callback URL: `http://localhost`.
-3. Click **Register application**, then tick **Enable Device Flow** and save.
-4. Copy **only the Client ID**. Do **not** generate a client secret. You don't need one, and it must never go anywhere.
-
-## 3. Open two clients
-In Chrome, open these two addresses in two tabs. Change the path to where you put the files, and replace `CLIENT_ID`:
+## 2. Open two clients
+In Chrome, open these two addresses in two tabs (change the path to where you put the files):
 ```
-file:///Users/<you>/atlas-sync-test/clients/client.html?writer=A&client_id=CLIENT_ID
-file:///Users/<you>/atlas-sync-test/clients/client.html?writer=B&client_id=CLIENT_ID
+file:///Users/<you>/atlas-sync-test/clients/client.html?writer=A
+file:///Users/<you>/atlas-sync-test/clients/client.html?writer=B
 ```
-The scope is already `public_repo`, which is enough for this public repo. Each writer writes only to `log/<writer>/`.
+Each writer writes only to `log/<writer>/`.
 
-## 4. Sign in (tab A first)
-Click **Sign in with GitHub**.
-- **If it works:** a code like `ABCD-1234` appears and `github.com/login/device` opens. Enter the code there and approve. The header then shows **signed in as <your login>**. Repeat in tab B (approving twice is fine).
-- **If it fails (likely):** the status shows an error, and **Sign-in diagnostics** says "BLOCKED… the block is CORS" or something similar. Click **Copy diagnostics** and paste that text into your report. Also try **Run CORS probe only** and copy again. Stop here; this is the evidence we need for the proxy decision.
-- Optional: **Try web flow (diagnostic)** opens GitHub's normal sign-in page. It cannot finish, because swapping the code for a token needs the client secret, which a static page cannot hold. It only shows whether the redirect part works. If you try it, copy the diagnostics afterwards.
+## 3. Create a token (one time, about 1 minute)
+1. In tab A click **Sign in with GitHub**. GitHub's *New fine-grained personal access token* page opens in a new tab, prefilled with name "Atlas sync", 30-day expiry and Contents: Read and write.
+2. Under **Repository access** pick **Only select repositories** → `MatthewGRodriguez/atlas-sync-test`.
+3. Under **Permissions** confirm **Contents: Read and write**.
+4. Click **Generate token** and copy it.
 
-## 5. If signed in: sync test
+## 4. Connect (both tabs)
+1. Paste the token into the **Token** field and click **Connect**. Tick **Remember for this tab** first if you want it to survive a reload of that tab (sessionStorage only; it is never saved to localStorage).
+2. Expected: "Signed in as <your login>; … write access confirmed." The header shows **signed in as <login>**.
+3. Possible messages:
+   - "rejected this token (401)": wrong, expired, or revoked token.
+   - "cannot see MatthewGRodriguez/atlas-sync-test": the repo was not selected under Repository access.
+   - "lacks write access": Contents is not Read and write.
+4. Paste the same token in tab B and click **Connect** (one token for both tabs is fine).
+
+If a token expires or is revoked during the test, the page signs out on the next 401 and says so.
+
+## 5. Sync test
 Click **Start sync** in both tabs (polls every 7 s).
 1. In A, change Harbor walk's joy to 9. Within about 10 s, B should show 9.
 2. In B, change the same joy to 6. A should show 6, plus a red **CHANGED … (yours) … by B** line.
@@ -43,18 +48,20 @@ Check that the repo got commits `atlas:demo writer:A seq:N` with files under `lo
 
 ## 6. What to report if anything fails
 - Screenshot of the **Status** panel and the **Event log**.
-- The copied **Sign-in diagnostics** text.
+- The copied **Sign-in diagnostics** text (token is masked). **Run API probe** checks that api.github.com is reachable.
 - Your browser and version, and whether you used `file://` or http.
 - If writes failed: the error lines (for example 403 or 404 with their message).
 
 ## 7. Clean up
-- Close both tabs (the token lives only in that tab) or click **Sign out**.
-- Revoke the authorization: GitHub → **Settings → Applications → Authorized OAuth Apps → atlas-sync-test → Revoke**.
-- Optional: delete the OAuth App under Developer settings → OAuth Apps.
+- Click **Sign out** in both tabs (clears memory and sessionStorage, stops polling) or close them.
+- Revoke the token: GitHub → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Atlas sync → Delete**. (It also expires on its own after 30 days.)
 
 ## Local mock (no GitHub needed)
 ```
-node tools/mock_github.js            # http://localhost:18799, device CORS on
-node tools/mock_github.js --device-cors 0   # simulate GitHub's CORS block
+node tools/mock_github.js                         # http://localhost:18799
+python3 -m http.server 8798 --bind 127.0.0.1      # from repo root, for the http:// check
+python3 tools/e2e_test.py                         # Playwright + Chrome
 ```
-Open `client.html?writer=A&api=http://localhost:18799&auth=http://localhost:18799&client_id=mock`. The automated test is `tools/e2e_test.py` (Playwright).
+Open `client.html?writer=A&api=http://localhost:18799` and paste a synthetic mock token:
+`test-valid-<name>` (works), `test-readonly-<name>` (no write), `test-norepo-<name>` (repo not selected); anything else gets 401.
+Revoke mid-session with `http://localhost:18799/__mock/config?revoke=<token>` (`revoke=none` resets). Never use ports 8765 or 8791.
